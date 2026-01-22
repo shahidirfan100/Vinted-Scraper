@@ -1,4 +1,4 @@
-// Vinted Scraper - Lightweight Playwright with correct selectors
+// Vinted Scraper - Optimized for speed and stealth
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 import { Actor, log } from 'apify';
 
@@ -44,7 +44,7 @@ const initialUrl = buildStartUrl();
 log.info(`Starting Vinted scraper: ${initialUrl}`);
 log.info(`Target: ${RESULTS_WANTED} results, max ${MAX_PAGES} pages`);
 
-// Create proxy configuration
+// Create proxy configuration - try datacenter first, fallback to residential
 const proxyConfiguration = await Actor.createProxyConfiguration(proxyConfig || {
     useApifyProxy: true,
     apifyProxyGroups: ['RESIDENTIAL'],
@@ -58,50 +58,113 @@ const crawler = new PlaywrightCrawler({
     maxRequestRetries: 3,
     useSessionPool: true,
     sessionPoolOptions: {
-        maxPoolSize: 3,
-        sessionOptions: { maxUsageCount: 5 },
+        maxPoolSize: 5,
+        sessionOptions: { maxUsageCount: 10 },
     },
-    maxConcurrency: 1,
-    requestHandlerTimeoutSecs: 90,
-    navigationTimeoutSecs: 45,
+    maxConcurrency: 2, // Slightly higher for speed
+    requestHandlerTimeoutSecs: 60,
+    navigationTimeoutSecs: 30, // Faster timeout
 
-    // Stealth fingerprints
+    // Maximum stealth fingerprints
     browserPoolOptions: {
         useFingerprints: true,
         fingerprintOptions: {
             fingerprintGeneratorOptions: {
-                browsers: ['chrome'],
-                operatingSystems: ['windows'],
+                browsers: [{ name: 'chrome', minVersion: 120, maxVersion: 130 }],
+                operatingSystems: ['windows', 'macos'],
                 devices: ['desktop'],
+                locales: ['en-US'],
             },
         },
     },
 
-    // Pre-navigation: Block resources & add stealth
+    // Pre-navigation: Aggressive resource blocking & maximum stealth
     preNavigationHooks: [
         async ({ page }) => {
-            // Block heavy resources for speed
+            // Aggressive resource blocking for speed
             await page.route('**/*', (route) => {
                 const type = route.request().resourceType();
                 const url = route.request().url();
 
-                if (['image', 'font', 'media'].includes(type) ||
-                    url.includes('google-analytics') ||
+                // Block everything except document, script, xhr, fetch
+                if (['image', 'font', 'media', 'stylesheet', 'other'].includes(type)) {
+                    return route.abort();
+                }
+
+                // Block tracking/analytics scripts
+                if (url.includes('google-analytics') ||
                     url.includes('googletagmanager') ||
                     url.includes('facebook') ||
                     url.includes('hotjar') ||
-                    url.includes('adsense')) {
+                    url.includes('adsense') ||
+                    url.includes('doubleclick') ||
+                    url.includes('pinterest') ||
+                    url.includes('twitter') ||
+                    url.includes('tiktok') ||
+                    url.includes('segment') ||
+                    url.includes('optimizely') ||
+                    url.includes('sentry') ||
+                    url.includes('newrelic') ||
+                    url.includes('datadome')) {
                     return route.abort();
                 }
+
                 return route.continue();
             });
 
-            // Stealth scripts
+            // Maximum stealth scripts
             await page.addInitScript(() => {
+                // Hide webdriver
                 Object.defineProperty(navigator, 'webdriver', { get: () => false });
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                delete navigator.__proto__.webdriver;
+
+                // Mock plugins
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => {
+                        const plugins = [
+                            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+                            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+                            { name: 'Native Client', filename: 'internal-nacl-plugin' },
+                        ];
+                        plugins.length = 3;
+                        return plugins;
+                    },
+                });
+
+                // Mock languages
                 Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-                window.chrome = { runtime: {} };
+                Object.defineProperty(navigator, 'language', { get: () => 'en-US' });
+
+                // Chrome runtime
+                window.chrome = { runtime: {}, csi: () => { }, loadTimes: () => { } };
+
+                // Override permissions
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                        Promise.resolve({ state: Notification.permission }) :
+                        originalQuery(parameters)
+                );
+
+                // Mock connection
+                Object.defineProperty(navigator, 'connection', {
+                    get: () => ({
+                        effectiveType: '4g',
+                        rtt: 50,
+                        downlink: 10,
+                        saveData: false,
+                    }),
+                });
+
+                // Mock hardware concurrency
+                Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+
+                // Mock device memory
+                Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+
+                // Mock screen properties
+                Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
+                Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
             });
         },
     ],
@@ -110,96 +173,63 @@ const crawler = new PlaywrightCrawler({
         const pageNo = request.userData?.pageNo || 1;
         log.info(`Processing page ${pageNo}: ${request.url}`);
 
-        // Wait for page load
+        // Wait for DOM content only (faster than networkidle)
         await page.waitForLoadState('domcontentloaded');
 
-        // Handle cookie consent modal
+        // Quick modal handling
         try {
-            const acceptBtn = page.locator('button:has-text("Accept all"), button:has-text("Accept")').first();
-            if (await acceptBtn.isVisible({ timeout: 3000 })) {
-                await acceptBtn.click();
-                await page.waitForTimeout(500);
-            }
-        } catch (e) { /* Modal not present */ }
+            await page.click('button:has-text("Accept all"), button:has-text("Accept")', { timeout: 2000 });
+        } catch (e) { /* No modal */ }
 
-        // Handle region/welcome modal
         try {
-            const closeBtn = page.locator('button[aria-label="Close"]').first();
-            if (await closeBtn.isVisible({ timeout: 2000 })) {
-                await closeBtn.click();
-                await page.waitForTimeout(500);
-            }
-        } catch (e) { /* Modal not present */ }
+            await page.click('button[aria-label="Close"]', { timeout: 1000 });
+        } catch (e) { /* No modal */ }
 
-        // Wait for products to load - use correct selector
-        await page.waitForSelector('[data-testid^="product-item-id-"]:not([data-testid*="--"])', { timeout: 15000 }).catch(() => { });
-        await page.waitForTimeout(1500);
+        // Wait for products with shorter timeout
+        await page.waitForSelector('[data-testid^="product-item-id-"]:not([data-testid*="--"])', { timeout: 10000 }).catch(() => { });
 
-        // Scroll to load lazy content
-        await page.evaluate(async () => {
-            for (let i = 0; i < 3; i++) {
-                window.scrollTo(0, document.body.scrollHeight * (i + 1) / 3);
-                await new Promise(r => setTimeout(r, 300));
-            }
-            window.scrollTo(0, 0);
+        // Quick scroll for lazy loading
+        await page.evaluate(() => {
+            window.scrollTo(0, document.body.scrollHeight);
         });
-        await page.waitForTimeout(1000);
+        await page.waitForTimeout(800);
 
-        // Extract all product data from DOM using CORRECT selectors
+        // Extract all product data
         const items = await page.evaluate(() => {
             const products = [];
-
-            // CORRECT SELECTOR: Only top-level containers, exclude nested elements with --
             const containers = document.querySelectorAll('[data-testid^="product-item-id-"]:not([data-testid*="--"])');
 
             containers.forEach((container) => {
                 try {
-                    // Get product ID from data-testid
                     const testId = container.getAttribute('data-testid') || '';
                     const productId = testId.replace('product-item-id-', '');
 
-                    if (!productId || productId.includes('--')) return; // Skip nested elements
+                    if (!productId || productId.includes('--')) return;
 
-                    // Get link with href containing /items/
                     const link = container.querySelector('a[href*="/items/"]');
                     const href = link?.getAttribute('href') || '';
                     const url = href.startsWith('http') ? href : (href ? `https://www.vinted.com${href}` : '');
 
-                    // Get title from link's title attribute
-                    // Format: "Product name, brand: X, condition: Y, $price, $total includes Buyer Protection"
                     const titleAttr = link?.getAttribute('title') || '';
-
-                    // Parse title from title attribute (everything before "brand:" or first comma)
                     let title = '';
                     const titleMatch = titleAttr.match(/^([^,]+)/);
-                    if (titleMatch) {
-                        title = titleMatch[1].trim();
-                    }
+                    if (titleMatch) title = titleMatch[1].trim();
 
-                    // Get price from price-text element
                     const priceEl = container.querySelector('[data-testid*="price-text"]');
-                    let price = priceEl?.textContent?.trim() || '';
-                    price = price.replace('$', '').trim();
+                    let price = priceEl?.textContent?.trim()?.replace('$', '') || '';
 
-                    // Get brand from description-title
                     const brandEl = container.querySelector('[data-testid*="description-title"]');
                     const brand = brandEl?.textContent?.trim() || '';
 
-                    // Get size and condition from description-subtitle
-                    // Format: "S / US 4-6 · Very good" or just "Very good"
                     const subtitleEl = container.querySelector('[data-testid*="description-subtitle"]');
                     const subtitleText = subtitleEl?.textContent?.trim() || '';
 
-                    let size = '';
-                    let condition = '';
-
+                    let size = '', condition = '';
                     if (subtitleText.includes('·')) {
                         const parts = subtitleText.split('·').map(p => p.trim());
                         size = parts[0] || '';
                         condition = parts[1] || '';
                     } else {
-                        // No dot separator - could be just condition or just size
-                        // Usually it's condition if it matches known conditions
                         const knownConditions = ['New with tags', 'New without tags', 'Very good', 'Good', 'Satisfactory'];
                         if (knownConditions.some(c => subtitleText.toLowerCase().includes(c.toLowerCase()))) {
                             condition = subtitleText;
@@ -208,34 +238,27 @@ const crawler = new PlaywrightCrawler({
                         }
                     }
 
-                    // Get image URL
                     const imgEl = container.querySelector('img');
-                    const imageUrl = imgEl?.src || imgEl?.getAttribute('data-src') || '';
+                    const imageUrl = imgEl?.src || '';
 
-                    // Get favorite count if available
-                    const favEl = container.querySelector('[data-testid*="favourite"] span, [data-testid*="favourite"]');
+                    const favEl = container.querySelector('[data-testid*="favourite"]');
                     let favoriteCount = 0;
-                    if (favEl) {
-                        const favText = favEl.textContent?.trim() || '';
-                        const favMatch = favText.match(/\d+/);
-                        if (favMatch) favoriteCount = parseInt(favMatch[0], 10);
-                    }
+                    const favText = favEl?.textContent?.match(/\d+/);
+                    if (favText) favoriteCount = parseInt(favText[0], 10);
 
                     products.push({
                         product_id: productId,
                         title: title || brand || 'Unknown',
-                        brand: brand,
-                        size: size,
-                        condition: condition,
-                        price: price,
+                        brand,
+                        size,
+                        condition,
+                        price,
                         currency: 'USD',
                         image_url: imageUrl,
-                        url: url,
+                        url,
                         favorite_count: favoriteCount,
                     });
-                } catch (e) {
-                    // Skip problematic items
-                }
+                } catch (e) { /* Skip */ }
             });
 
             return products;
@@ -263,8 +286,6 @@ const crawler = new PlaywrightCrawler({
         if (saved < RESULTS_WANTED && pageNo < MAX_PAGES) {
             const nextPageUrl = new URL(request.url);
             nextPageUrl.searchParams.set('page', String(pageNo + 1));
-
-            log.info(`Queueing page ${pageNo + 1}`);
             await crawlerInstance.addRequests([{
                 url: nextPageUrl.href,
                 userData: { pageNo: pageNo + 1 },
