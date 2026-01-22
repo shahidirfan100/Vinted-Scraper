@@ -1,4 +1,4 @@
-// Vinted Scraper - Lightweight Playwright with full DOM extraction
+// Vinted Scraper - Lightweight Playwright with correct selectors
 import { PlaywrightCrawler, Dataset } from 'crawlee';
 import { Actor, log } from 'apify';
 
@@ -85,7 +85,6 @@ const crawler = new PlaywrightCrawler({
                 const type = route.request().resourceType();
                 const url = route.request().url();
 
-                // Block images, fonts, media, and trackers
                 if (['image', 'font', 'media'].includes(type) ||
                     url.includes('google-analytics') ||
                     url.includes('googletagmanager') ||
@@ -132,8 +131,8 @@ const crawler = new PlaywrightCrawler({
             }
         } catch (e) { /* Modal not present */ }
 
-        // Wait for products to load
-        await page.waitForSelector('[data-testid^="product-item-id-"], .new-item-box__container', { timeout: 15000 }).catch(() => { });
+        // Wait for products to load - use correct selector
+        await page.waitForSelector('[data-testid^="product-item-id-"]:not([data-testid*="--"])', { timeout: 15000 }).catch(() => { });
         await page.waitForTimeout(1500);
 
         // Scroll to load lazy content
@@ -146,72 +145,67 @@ const crawler = new PlaywrightCrawler({
         });
         await page.waitForTimeout(1000);
 
-        // Extract all product data from DOM
+        // Extract all product data from DOM using CORRECT selectors
         const items = await page.evaluate(() => {
             const products = [];
-            const containers = document.querySelectorAll('[data-testid^="product-item-id-"], .new-item-box__container');
+
+            // CORRECT SELECTOR: Only top-level containers, exclude nested elements with --
+            const containers = document.querySelectorAll('[data-testid^="product-item-id-"]:not([data-testid*="--"])');
 
             containers.forEach((container) => {
                 try {
                     // Get product ID from data-testid
                     const testId = container.getAttribute('data-testid') || '';
-                    const productId = testId.replace('product-item-id-', '') || '';
+                    const productId = testId.replace('product-item-id-', '');
 
-                    // Get link and URL
-                    const link = container.querySelector('a.new-item-box__overlay, a[href*="/items/"]');
+                    if (!productId || productId.includes('--')) return; // Skip nested elements
+
+                    // Get link with href containing /items/
+                    const link = container.querySelector('a[href*="/items/"]');
                     const href = link?.getAttribute('href') || '';
-                    const url = href ? `https://www.vinted.com${href}` : `https://www.vinted.com/items/${productId}`;
+                    const url = href.startsWith('http') ? href : (href ? `https://www.vinted.com${href}` : '');
 
-                    // Parse title attribute (contains all info)
-                    // Format: "Product name, brand: X, condition: Y, size: Z, $price"
+                    // Get title from link's title attribute
+                    // Format: "Product name, brand: X, condition: Y, $price, $total includes Buyer Protection"
                     const titleAttr = link?.getAttribute('title') || '';
 
-                    // Extract from title attribute using regex
-                    const brandMatch = titleAttr.match(/brand:\s*([^,]+)/i);
-                    const conditionMatch = titleAttr.match(/condition:\s*([^,]+)/i);
-                    const sizeMatch = titleAttr.match(/size:\s*([^,]+)/i);
-                    const priceMatch = titleAttr.match(/\$[\d.,]+/);
-
-                    // Get product name (text before first comma or "brand:")
+                    // Parse title from title attribute (everything before "brand:" or first comma)
                     let title = '';
-                    const nameMatch = titleAttr.match(/^([^,]+)/);
-                    if (nameMatch) {
-                        title = nameMatch[1].trim();
-                        // Remove price if it's at the end
-                        title = title.replace(/\s*\$[\d.,]+\s*$/, '').trim();
+                    const titleMatch = titleAttr.match(/^([^,]+)/);
+                    if (titleMatch) {
+                        title = titleMatch[1].trim();
                     }
 
-                    // Fallback: get from DOM elements
-                    if (!title) {
-                        const titleEl = container.querySelector('.new-item-box__description p:first-of-type, [class*="title"]');
-                        title = titleEl?.textContent?.trim() || '';
-                    }
+                    // Get price from price-text element
+                    const priceEl = container.querySelector('[data-testid*="price-text"]');
+                    let price = priceEl?.textContent?.trim() || '';
+                    price = price.replace('$', '').trim();
 
-                    // Get brand from DOM if not in title
-                    let brand = brandMatch ? brandMatch[1].trim() : '';
-                    if (!brand) {
-                        const brandEl = container.querySelector('.new-item-box__description p:first-of-type');
-                        brand = brandEl?.textContent?.trim() || '';
-                    }
+                    // Get brand from description-title
+                    const brandEl = container.querySelector('[data-testid*="description-title"]');
+                    const brand = brandEl?.textContent?.trim() || '';
 
-                    // Get size and condition from second line
-                    let size = sizeMatch ? sizeMatch[1].trim() : '';
-                    let condition = conditionMatch ? conditionMatch[1].trim() : '';
-                    if (!size || !condition) {
-                        const infoEl = container.querySelector('.new-item-box__description p:nth-of-type(2)');
-                        const infoText = infoEl?.textContent?.trim() || '';
-                        // Format: "S / US 4-6 · Very good"
-                        const parts = infoText.split('·').map(p => p.trim());
-                        if (!size && parts[0]) size = parts[0];
-                        if (!condition && parts[1]) condition = parts[1];
-                    }
+                    // Get size and condition from description-subtitle
+                    // Format: "S / US 4-6 · Very good" or just "Very good"
+                    const subtitleEl = container.querySelector('[data-testid*="description-subtitle"]');
+                    const subtitleText = subtitleEl?.textContent?.trim() || '';
 
-                    // Get price
-                    let price = priceMatch ? priceMatch[0].replace('$', '') : '';
-                    if (!price) {
-                        const priceEl = container.querySelector('.new-item-box__title p, [class*="price"]');
-                        const priceText = priceEl?.textContent?.trim() || '';
-                        price = priceText.replace(/[^0-9.,]/g, '');
+                    let size = '';
+                    let condition = '';
+
+                    if (subtitleText.includes('·')) {
+                        const parts = subtitleText.split('·').map(p => p.trim());
+                        size = parts[0] || '';
+                        condition = parts[1] || '';
+                    } else {
+                        // No dot separator - could be just condition or just size
+                        // Usually it's condition if it matches known conditions
+                        const knownConditions = ['New with tags', 'New without tags', 'Very good', 'Good', 'Satisfactory'];
+                        if (knownConditions.some(c => subtitleText.toLowerCase().includes(c.toLowerCase()))) {
+                            condition = subtitleText;
+                        } else {
+                            size = subtitleText;
+                        }
                     }
 
                     // Get image URL
@@ -219,23 +213,26 @@ const crawler = new PlaywrightCrawler({
                     const imageUrl = imgEl?.src || imgEl?.getAttribute('data-src') || '';
 
                     // Get favorite count if available
-                    const favEl = container.querySelector('[class*="favourite"], [class*="heart"]');
-                    const favoriteCount = parseInt(favEl?.textContent?.replace(/\D/g, '') || '0', 10);
-
-                    if (productId || url) {
-                        products.push({
-                            product_id: productId,
-                            title: title || brand || 'Unknown',
-                            brand: brand,
-                            size: size,
-                            condition: condition,
-                            price: price,
-                            currency: 'USD',
-                            image_url: imageUrl,
-                            url: url,
-                            favorite_count: favoriteCount,
-                        });
+                    const favEl = container.querySelector('[data-testid*="favourite"] span, [data-testid*="favourite"]');
+                    let favoriteCount = 0;
+                    if (favEl) {
+                        const favText = favEl.textContent?.trim() || '';
+                        const favMatch = favText.match(/\d+/);
+                        if (favMatch) favoriteCount = parseInt(favMatch[0], 10);
                     }
+
+                    products.push({
+                        product_id: productId,
+                        title: title || brand || 'Unknown',
+                        brand: brand,
+                        size: size,
+                        condition: condition,
+                        price: price,
+                        currency: 'USD',
+                        image_url: imageUrl,
+                        url: url,
+                        favorite_count: favoriteCount,
+                    });
                 } catch (e) {
                     // Skip problematic items
                 }
@@ -249,7 +246,7 @@ const crawler = new PlaywrightCrawler({
         // Deduplicate and save
         const newItems = [];
         for (const item of items) {
-            const id = item.product_id || item.url;
+            const id = item.product_id;
             if (id && !seenIds.has(id) && saved < RESULTS_WANTED) {
                 seenIds.add(id);
                 newItems.push(item);
