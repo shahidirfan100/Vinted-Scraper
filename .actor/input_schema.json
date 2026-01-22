@@ -1,0 +1,80 @@
+{
+  "title": "Vinted Scraper",
+  "description": "Scrape product listings from Vinted marketplace. Provide a catalog URL or use search parameters to find items.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "startUrl": {
+      "title": "Start URL",
+      "type": "string",
+      "description": "Start scraping from a specific Vinted catalog or search URL (e.g., https://www.vinted.com/catalog/1904-women).",
+      "editor": "textfield",
+      "prefill": "https://www.vinted.com/catalog/1904-women"
+    },
+    "keyword": {
+      "title": "Search keyword",
+      "type": "string",
+      "description": "Product search keyword(s), e.g., 'vintage jeans', 'Nike shoes', 'designer bag'.",
+      "editor": "textfield",
+      "prefill": "dress"
+    },
+    "category": {
+      "title": "Category",
+      "type": "string",
+      "description": "Product category to browse.",
+      "editor": "select",
+      "enum": [
+        "women",
+        "men",
+        "kids",
+        "home"
+      ],
+      "default": "women"
+    },
+    "minPrice": {
+      "title": "Minimum price",
+      "type": "integer",
+      "description": "Minimum price filter (in USD).",
+      "editor": "number",
+      "minimum": 0
+    },
+    "maxPrice": {
+      "title": "Maximum price",
+      "type": "integer",
+      "description": "Maximum price filter (in USD).",
+      "editor": "number",
+      "minimum": 0
+    },
+    "results_wanted": {
+      "title": "Maximum number of results",
+      "type": "integer",
+      "description": "The maximum number of product listings to collect.",
+      "minimum": 1,
+      "default": 20,
+      "prefill": 20,
+      "editor": "number"
+    },
+    "max_pages": {
+      "title": "Maximum number of pages",
+      "type": "integer",
+      "description": "A safety cap on the number of catalog pages to visit.",
+      "minimum": 1,
+      "default": 10,
+      "editor": "number"
+    },
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Use Apify Proxy (RESIDENTIAL recommended for Vinted).",
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": [
+          "RESIDENTIAL"
+        ]
+      }
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
