@@ -1,6 +1,7 @@
-// Vinted Scraper - PlaywrightCrawler with API interception for fast data extraction
-import { PlaywrightCrawler, Dataset } from 'crawlee';
+// Vinted Scraper - Hybrid approach: Playwright for session, got-scraping for data
 import { Actor, log } from 'apify';
+import { PlaywrightCrawler, Dataset } from 'crawlee';
+import { gotScraping } from 'got-scraping';
 
 await Actor.init();
 
@@ -19,11 +20,10 @@ const {
 const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW) ? Math.max(1, +RESULTS_WANTED_RAW) : 20;
 const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW) ? Math.max(1, +MAX_PAGES_RAW) : 10;
 
-// Build start URL from parameters or use provided URL
+// Build start URL from parameters
 function buildStartUrl() {
     if (startUrl) return startUrl;
 
-    // Category mappings for Vinted US
     const categoryMap = {
         'women': '1904-women',
         'men': '5-men',
@@ -41,11 +41,19 @@ function buildStartUrl() {
     return baseUrl.href;
 }
 
-const initialUrl = buildStartUrl();
-log.info(`Starting Vinted scraper with URL: ${initialUrl}`);
-log.info(`Target: ${RESULTS_WANTED} results, max ${MAX_PAGES} pages`);
+// Extract catalog ID from URL
+function extractCatalogId(url) {
+    const match = url.match(/catalog\/(\d+)/);
+    return match ? match[1] : '1904';
+}
 
-// Create proxy configuration (residential recommended for Vinted)
+const initialUrl = buildStartUrl();
+const catalogId = extractCatalogId(initialUrl);
+
+log.info(`Starting Vinted scraper with URL: ${initialUrl}`);
+log.info(`Catalog ID: ${catalogId}, Target: ${RESULTS_WANTED} results`);
+
+// Create proxy configuration
 const proxyConfiguration = await Actor.createProxyConfiguration(proxyConfig || {
     useApifyProxy: true,
     apifyProxyGroups: ['RESIDENTIAL'],
@@ -53,269 +61,312 @@ const proxyConfiguration = await Actor.createProxyConfiguration(proxyConfig || {
 
 let saved = 0;
 const seenIds = new Set();
-let capturedApiData = [];
+let sessionCookies = '';
+let proxyUrl = '';
 
-// Random delay utility for human-like behavior
-const randomDelay = (min = 500, max = 2000) =>
+// Random delay utility
+const randomDelay = (min = 500, max = 1500) =>
     new Promise(r => setTimeout(r, min + Math.random() * (max - min)));
 
-// Parse item data from API response
+// Parse API items
 function parseApiItems(items) {
     return items.map(item => ({
         product_id: String(item.id || ''),
         title: item.title || '',
         brand: item.brand_title || item.brand || '',
         size: item.size_title || item.size || '',
-        price: item.price || item.total_item_price || '',
+        price: item.price || '',
         currency: item.currency || 'USD',
-        total_price: item.total_item_price || item.service_fee
-            ? `${(parseFloat(item.price || 0) + parseFloat(item.service_fee || 0)).toFixed(2)}`
-            : item.price || '',
+        total_price: item.total_item_price || '',
         condition: item.status || '',
         image_url: item.photo?.url || item.photos?.[0]?.url || '',
         url: item.url ? `https://www.vinted.com${item.url}` : `https://www.vinted.com/items/${item.id}`,
         seller: item.user?.login || '',
         favorite_count: item.favourite_count || 0,
-        view_count: item.view_count || 0,
     }));
 }
 
-// Parse item data from DOM as fallback
-function parseItemFromDom(el, $) {
-    const $el = $(el);
-    const link = $el.find('a.new-item-box__overlay').first();
-    const href = link.attr('href') || '';
-    const titleAttr = link.attr('title') || '';
+// Parse DOM items fallback
+function parseDomItems(html) {
+    const items = [];
 
-    // Parse title attribute which contains: "Product name, brand: X, condition: Y, size: Z, price"
-    const parseTitleAttr = (title) => {
-        const parts = {};
-        const regex = /brand:\s*([^,]+)|condition:\s*([^,]+)|size:\s*([^,]+)/gi;
-        let match;
-        while ((match = regex.exec(title)) !== null) {
-            if (match[1]) parts.brand = match[1].trim();
-            if (match[2]) parts.condition = match[2].trim();
-            if (match[3]) parts.size = match[3].trim();
+    // Extract items using regex patterns from the RSC stream
+    const itemRegex = /"id":(\d+),"title":"([^"]+)".*?"brand_title":"([^"]*)".*?"size_title":"([^"]*)".*?"price":"([^"]+)"/g;
+    let match;
+
+    while ((match = itemRegex.exec(html)) !== null) {
+        items.push({
+            product_id: match[1],
+            title: match[2],
+            brand: match[3],
+            size: match[4],
+            price: match[5],
+            currency: 'USD',
+            url: `https://www.vinted.com/items/${match[1]}`,
+        });
+    }
+
+    // Fallback: extract from data-testid elements
+    const productIdRegex = /product-item-id-(\d+)/g;
+    while ((match = productIdRegex.exec(html)) !== null) {
+        if (!items.some(i => i.product_id === match[1])) {
+            items.push({
+                product_id: match[1],
+                url: `https://www.vinted.com/items/${match[1]}`,
+            });
         }
-        // Product name is before the first comma or "brand:"
-        const nameMatch = title.match(/^([^,]+)/);
-        if (nameMatch) parts.name = nameMatch[1].trim();
-        return parts;
-    };
+    }
 
-    const parsed = parseTitleAttr(titleAttr);
-    const testId = $el.attr('data-testid') || '';
-    const productId = testId.replace('product-item-id-', '');
-
-    // Extract price from various possible selectors
-    const priceText = $el.find('.new-item-box__title p, [class*="price"]').first().text().trim();
-    const price = priceText.replace(/[^0-9.,]/g, '');
-
-    // Extract image
-    const imgSrc = $el.find('img').first().attr('src') || '';
-
-    return {
-        product_id: productId,
-        title: parsed.name || titleAttr.split(',')[0]?.trim() || '',
-        brand: parsed.brand || $el.find('.new-item-box__description p:first-of-type').text().trim() || '',
-        size: parsed.size || '',
-        condition: parsed.condition || '',
-        price: price,
-        currency: 'USD',
-        total_price: '',
-        image_url: imgSrc,
-        url: href ? `https://www.vinted.com${href}` : '',
-        seller: '',
-        favorite_count: 0,
-        view_count: 0,
-    };
+    return items;
 }
+
+// Fetch data using got-scraping (fast HTTP)
+async function fetchWithGotScraping(url, cookies, proxy) {
+    const headers = {
+        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'accept-language': 'en-US,en;q=0.9',
+        'cache-control': 'no-cache',
+        'sec-ch-ua': '"Chromium";v=\"122\", \"Google Chrome\";v=\"122\"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'document',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-site': 'same-origin',
+        'upgrade-insecure-requests': '1',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    };
+
+    if (cookies) {
+        headers['cookie'] = cookies;
+    }
+
+    const options = {
+        headers,
+        timeout: { request: 30000 },
+        retry: { limit: 3 },
+    };
+
+    if (proxy) {
+        options.proxyUrl = proxy;
+    }
+
+    const response = await gotScraping.get(url, options);
+    return response.body;
+}
+
+// Fetch API data directly
+async function fetchApiData(catalogId, page, cookies, proxy) {
+    const apiUrl = `https://www.vinted.com/api/v2/catalog/items?catalog_ids[]=${catalogId}&page=${page}&per_page=24&order=newest_first`;
+
+    const headers = {
+        'accept': 'application/json, text/plain, */*',
+        'accept-language': 'en-US,en;q=0.9',
+        'sec-ch-ua': '"Chromium";v=\"122\", \"Google Chrome\";v=\"122\"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-origin',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'x-requested-with': 'XMLHttpRequest',
+    };
+
+    if (cookies) {
+        headers['cookie'] = cookies;
+    }
+
+    const options = {
+        headers,
+        timeout: { request: 20000 },
+        retry: { limit: 2 },
+    };
+
+    if (proxy) {
+        options.proxyUrl = proxy;
+    }
+
+    try {
+        const response = await gotScraping.get(apiUrl, options);
+        return JSON.parse(response.body);
+    } catch (e) {
+        log.warning(`API fetch failed: ${e.message}`);
+        return null;
+    }
+}
+
+// STEP 1: Use Playwright to bypass anti-bot and get session cookies
+log.info('Step 1: Using Playwright to establish session...');
 
 const crawler = new PlaywrightCrawler({
     proxyConfiguration,
-    maxRequestRetries: 5,
-    useSessionPool: true,
-    sessionPoolOptions: {
-        maxPoolSize: 5,
-        sessionOptions: { maxUsageCount: 3 },
-    },
-    maxConcurrency: 2,
-    requestHandlerTimeoutSecs: 120,
-    navigationTimeoutSecs: 60,
+    maxRequestRetries: 3,
+    maxConcurrency: 1,
+    requestHandlerTimeoutSecs: 90,
+    navigationTimeoutSecs: 45,
 
-    // Fingerprint generation for stealth (Chrome)
     browserPoolOptions: {
         useFingerprints: true,
         fingerprintOptions: {
             fingerprintGeneratorOptions: {
                 browsers: ['chrome'],
-                operatingSystems: ['windows', 'macos'],
+                operatingSystems: ['windows'],
                 devices: ['desktop'],
             },
         },
     },
 
-    // Pre-navigation hooks for stealth and API interception
     preNavigationHooks: [
-        async ({ page, request }) => {
-            // Reset captured data for this request
-            capturedApiData = [];
-
-            // Intercept API responses for catalog items
-            page.on('response', async (response) => {
-                const url = response.url();
-                if (url.includes('/api/v2/catalog/items') || url.includes('/api/v2/items')) {
-                    try {
-                        const json = await response.json();
-                        if (json.items && Array.isArray(json.items)) {
-                            log.info(`Captured ${json.items.length} items from API`);
-                            capturedApiData.push(...json.items);
-                        }
-                    } catch (e) {
-                        // Not JSON or failed to parse
-                    }
-                }
-            });
-
-            // Block heavy resources for performance
+        async ({ page }) => {
+            // Block heavy resources
             await page.route('**/*', (route) => {
                 const type = route.request().resourceType();
-                const url = route.request().url();
-
-                if (['font', 'media'].includes(type) ||
-                    url.includes('google-analytics') ||
-                    url.includes('googletagmanager') ||
-                    url.includes('facebook') ||
-                    url.includes('doubleclick') ||
-                    url.includes('pinterest') ||
-                    url.includes('adsense') ||
-                    url.includes('hotjar')) {
+                if (['image', 'font', 'media', 'stylesheet'].includes(type)) {
                     return route.abort();
                 }
                 return route.continue();
             });
 
-            // Stealth: Hide webdriver property and automation indicators
+            // Stealth
             await page.addInitScript(() => {
                 Object.defineProperty(navigator, 'webdriver', { get: () => false });
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-                window.chrome = { runtime: {} };
-
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                        Promise.resolve({ state: Notification.permission }) :
-                        originalQuery(parameters)
-                );
             });
         },
     ],
 
-    async requestHandler({ page, request, crawler: crawlerInstance }) {
-        const pageNo = request.userData?.pageNo || 1;
-        log.info(`Processing page ${pageNo}: ${request.url}`);
+    async requestHandler({ page, request, proxyInfo }) {
+        log.info(`Playwright: Loading ${request.url} to get cookies...`);
 
-        // Wait for page to load
+        // Wait for page load
         await page.waitForLoadState('domcontentloaded');
-        await randomDelay(1000, 2000);
+        await randomDelay(2000, 3000);
 
-        // Handle cookie consent modal if present
+        // Handle cookie consent
         try {
             const acceptBtn = await page.$('button:has-text("Accept all"), button:has-text("Accept")');
             if (acceptBtn) {
                 await acceptBtn.click();
-                await randomDelay(500, 1000);
+                await randomDelay(1000, 1500);
             }
-        } catch (e) { /* Modal not present */ }
+        } catch (e) { /* ignore */ }
 
-        // Handle region/welcome modal if present
+        // Handle region modal
         try {
-            const closeBtn = await page.$('button[aria-label="Close"], [data-testid="modal-close"]');
+            const closeBtn = await page.$('button[aria-label="Close"]');
             if (closeBtn) {
                 await closeBtn.click();
                 await randomDelay(500, 1000);
             }
-        } catch (e) { /* Modal not present */ }
+        } catch (e) { /* ignore */ }
 
-        // Wait for network idle to capture API responses
+        // Wait for content
         await page.waitForLoadState('networkidle').catch(() => { });
-        await randomDelay(2000, 3000);
-
-        // Scroll to trigger lazy loading and potential API calls
-        await page.evaluate(async () => {
-            for (let i = 0; i < 3; i++) {
-                window.scrollTo(0, document.body.scrollHeight * (i + 1) / 3);
-                await new Promise(r => setTimeout(r, 500));
-            }
-        });
         await randomDelay(1000, 2000);
 
-        let items = [];
+        // Extract cookies
+        const cookies = await page.context().cookies();
+        sessionCookies = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+        log.info(`Got ${cookies.length} cookies from session`);
 
-        // PRIORITY 1: Use captured API data
-        if (capturedApiData.length > 0) {
-            log.info(`Using ${capturedApiData.length} items from API interception`);
-            items = parseApiItems(capturedApiData);
+        // Store proxy URL for got-scraping
+        if (proxyInfo) {
+            proxyUrl = `http://${proxyInfo.username}:${proxyInfo.password}@${proxyInfo.hostname}:${proxyInfo.port}`;
         }
 
-        // PRIORITY 2: Fall back to DOM extraction
-        if (items.length === 0) {
-            log.info('No API data captured, falling back to DOM extraction');
+        // Try to extract initial data from page
+        const html = await page.content();
+        const initialItems = parseDomItems(html);
 
-            const htmlContent = await page.content();
-            const cheerio = await import('cheerio');
-            const $ = cheerio.load(htmlContent);
+        if (initialItems.length > 0) {
+            log.info(`Extracted ${initialItems.length} items from initial page`);
+            const newItems = initialItems.filter(item => {
+                if (seenIds.has(item.product_id)) return false;
+                seenIds.add(item.product_id);
+                return true;
+            }).slice(0, RESULTS_WANTED);
 
-            const productContainers = $('[data-testid^="product-item-id-"], .new-item-box__container');
-            log.info(`Found ${productContainers.length} product containers in DOM`);
-
-            productContainers.each((_, el) => {
-                const item = parseItemFromDom(el, $);
-                if (item.product_id || item.url) {
-                    items.push(item);
-                }
-            });
-        }
-
-        // Deduplicate and save
-        const newItems = [];
-        for (const item of items) {
-            const id = item.product_id || item.url;
-            if (id && !seenIds.has(id) && saved < RESULTS_WANTED) {
-                seenIds.add(id);
-                newItems.push(item);
-                saved++;
+            if (newItems.length > 0) {
+                await Dataset.pushData(newItems);
+                saved += newItems.length;
+                log.info(`Saved ${newItems.length} items. Total: ${saved}/${RESULTS_WANTED}`);
             }
-        }
-
-        if (newItems.length > 0) {
-            await Dataset.pushData(newItems);
-            log.info(`Saved ${newItems.length} items. Total: ${saved}/${RESULTS_WANTED}`);
-        }
-
-        // Pagination: Queue next page if needed
-        if (saved < RESULTS_WANTED && pageNo < MAX_PAGES) {
-            const nextPageUrl = new URL(request.url);
-            nextPageUrl.searchParams.set('page', String(pageNo + 1));
-
-            log.info(`Queueing page ${pageNo + 1}: ${nextPageUrl.href}`);
-            await crawlerInstance.addRequests([{
-                url: nextPageUrl.href,
-                userData: { pageNo: pageNo + 1 },
-            }]);
         }
     },
 
     failedRequestHandler({ request }, error) {
-        if (error.message?.includes('403')) {
-            log.warning(`Blocked (403): ${request.url}`);
-        } else {
-            log.error(`Request ${request.url} failed: ${error.message}`);
-        }
+        log.error(`Playwright failed: ${error.message}`);
     },
 });
 
-await crawler.run([{ url: initialUrl, userData: { pageNo: 1 } }]);
+// Run Playwright once to get session
+await crawler.run([{ url: initialUrl }]);
+
+// STEP 2: Use got-scraping for fast data fetching
+if (saved < RESULTS_WANTED && sessionCookies) {
+    log.info('Step 2: Using got-scraping for fast data fetching...');
+
+    for (let page = 1; page <= MAX_PAGES && saved < RESULTS_WANTED; page++) {
+        await randomDelay(1500, 3000);
+
+        // Try API first (fastest)
+        log.info(`Fetching page ${page} via API...`);
+        const apiData = await fetchApiData(catalogId, page, sessionCookies, proxyUrl);
+
+        if (apiData && apiData.items && apiData.items.length > 0) {
+            log.info(`API returned ${apiData.items.length} items`);
+            const items = parseApiItems(apiData.items);
+
+            const newItems = items.filter(item => {
+                if (seenIds.has(item.product_id)) return false;
+                seenIds.add(item.product_id);
+                return true;
+            });
+
+            const toSave = newItems.slice(0, RESULTS_WANTED - saved);
+            if (toSave.length > 0) {
+                await Dataset.pushData(toSave);
+                saved += toSave.length;
+                log.info(`Saved ${toSave.length} items. Total: ${saved}/${RESULTS_WANTED}`);
+            }
+
+            // Check if more pages available
+            if (!apiData.pagination || page >= apiData.pagination.total_pages) {
+                log.info('No more pages available');
+                break;
+            }
+        } else {
+            // Fallback to HTML fetch
+            log.info(`API failed, fetching page ${page} via HTML...`);
+            const pageUrl = new URL(initialUrl);
+            pageUrl.searchParams.set('page', String(page));
+
+            try {
+                const html = await fetchWithGotScraping(pageUrl.href, sessionCookies, proxyUrl);
+                const items = parseDomItems(html);
+
+                if (items.length === 0) {
+                    log.warning('No items found in HTML, might be blocked');
+                    break;
+                }
+
+                const newItems = items.filter(item => {
+                    if (seenIds.has(item.product_id)) return false;
+                    seenIds.add(item.product_id);
+                    return true;
+                });
+
+                const toSave = newItems.slice(0, RESULTS_WANTED - saved);
+                if (toSave.length > 0) {
+                    await Dataset.pushData(toSave);
+                    saved += toSave.length;
+                    log.info(`Saved ${toSave.length} items from HTML. Total: ${saved}/${RESULTS_WANTED}`);
+                }
+            } catch (e) {
+                log.error(`HTML fetch failed: ${e.message}`);
+                break;
+            }
+        }
+    }
+}
+
 log.info(`Scraping completed. Total items saved: ${saved}`);
 await Actor.exit();
