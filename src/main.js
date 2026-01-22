@@ -1,7 +1,6 @@
-// Vinted Scraper - Hybrid approach: Playwright for session, got-scraping for data
-import { Actor, log } from 'apify';
+// Vinted Scraper - Lightweight Playwright with full DOM extraction
 import { PlaywrightCrawler, Dataset } from 'crawlee';
-import { gotScraping } from 'got-scraping';
+import { Actor, log } from 'apify';
 
 await Actor.init();
 
@@ -20,7 +19,7 @@ const {
 const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW) ? Math.max(1, +RESULTS_WANTED_RAW) : 20;
 const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW) ? Math.max(1, +MAX_PAGES_RAW) : 10;
 
-// Build start URL from parameters
+// Build start URL
 function buildStartUrl() {
     if (startUrl) return startUrl;
 
@@ -41,17 +40,9 @@ function buildStartUrl() {
     return baseUrl.href;
 }
 
-// Extract catalog ID from URL
-function extractCatalogId(url) {
-    const match = url.match(/catalog\/(\d+)/);
-    return match ? match[1] : '1904';
-}
-
 const initialUrl = buildStartUrl();
-const catalogId = extractCatalogId(initialUrl);
-
-log.info(`Starting Vinted scraper with URL: ${initialUrl}`);
-log.info(`Catalog ID: ${catalogId}, Target: ${RESULTS_WANTED} results`);
+log.info(`Starting Vinted scraper: ${initialUrl}`);
+log.info(`Target: ${RESULTS_WANTED} results, max ${MAX_PAGES} pages`);
 
 // Create proxy configuration
 const proxyConfiguration = await Actor.createProxyConfiguration(proxyConfig || {
@@ -61,149 +52,20 @@ const proxyConfiguration = await Actor.createProxyConfiguration(proxyConfig || {
 
 let saved = 0;
 const seenIds = new Set();
-let sessionCookies = '';
-let proxyUrl = '';
-
-// Random delay utility
-const randomDelay = (min = 500, max = 1500) =>
-    new Promise(r => setTimeout(r, min + Math.random() * (max - min)));
-
-// Parse API items
-function parseApiItems(items) {
-    return items.map(item => ({
-        product_id: String(item.id || ''),
-        title: item.title || '',
-        brand: item.brand_title || item.brand || '',
-        size: item.size_title || item.size || '',
-        price: item.price || '',
-        currency: item.currency || 'USD',
-        total_price: item.total_item_price || '',
-        condition: item.status || '',
-        image_url: item.photo?.url || item.photos?.[0]?.url || '',
-        url: item.url ? `https://www.vinted.com${item.url}` : `https://www.vinted.com/items/${item.id}`,
-        seller: item.user?.login || '',
-        favorite_count: item.favourite_count || 0,
-    }));
-}
-
-// Parse DOM items fallback
-function parseDomItems(html) {
-    const items = [];
-
-    // Extract items using regex patterns from the RSC stream
-    const itemRegex = /"id":(\d+),"title":"([^"]+)".*?"brand_title":"([^"]*)".*?"size_title":"([^"]*)".*?"price":"([^"]+)"/g;
-    let match;
-
-    while ((match = itemRegex.exec(html)) !== null) {
-        items.push({
-            product_id: match[1],
-            title: match[2],
-            brand: match[3],
-            size: match[4],
-            price: match[5],
-            currency: 'USD',
-            url: `https://www.vinted.com/items/${match[1]}`,
-        });
-    }
-
-    // Fallback: extract from data-testid elements
-    const productIdRegex = /product-item-id-(\d+)/g;
-    while ((match = productIdRegex.exec(html)) !== null) {
-        if (!items.some(i => i.product_id === match[1])) {
-            items.push({
-                product_id: match[1],
-                url: `https://www.vinted.com/items/${match[1]}`,
-            });
-        }
-    }
-
-    return items;
-}
-
-// Fetch data using got-scraping (fast HTTP)
-async function fetchWithGotScraping(url, cookies, proxy) {
-    const headers = {
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'accept-language': 'en-US,en;q=0.9',
-        'cache-control': 'no-cache',
-        'sec-ch-ua': '"Chromium";v=\"122\", \"Google Chrome\";v=\"122\"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'sec-fetch-dest': 'document',
-        'sec-fetch-mode': 'navigate',
-        'sec-fetch-site': 'same-origin',
-        'upgrade-insecure-requests': '1',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    };
-
-    if (cookies) {
-        headers['cookie'] = cookies;
-    }
-
-    const options = {
-        headers,
-        timeout: { request: 30000 },
-        retry: { limit: 3 },
-    };
-
-    if (proxy) {
-        options.proxyUrl = proxy;
-    }
-
-    const response = await gotScraping.get(url, options);
-    return response.body;
-}
-
-// Fetch API data directly
-async function fetchApiData(catalogId, page, cookies, proxy) {
-    const apiUrl = `https://www.vinted.com/api/v2/catalog/items?catalog_ids[]=${catalogId}&page=${page}&per_page=24&order=newest_first`;
-
-    const headers = {
-        'accept': 'application/json, text/plain, */*',
-        'accept-language': 'en-US,en;q=0.9',
-        'sec-ch-ua': '"Chromium";v=\"122\", \"Google Chrome\";v=\"122\"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'sec-fetch-dest': 'empty',
-        'sec-fetch-mode': 'cors',
-        'sec-fetch-site': 'same-origin',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'x-requested-with': 'XMLHttpRequest',
-    };
-
-    if (cookies) {
-        headers['cookie'] = cookies;
-    }
-
-    const options = {
-        headers,
-        timeout: { request: 20000 },
-        retry: { limit: 2 },
-    };
-
-    if (proxy) {
-        options.proxyUrl = proxy;
-    }
-
-    try {
-        const response = await gotScraping.get(apiUrl, options);
-        return JSON.parse(response.body);
-    } catch (e) {
-        log.warning(`API fetch failed: ${e.message}`);
-        return null;
-    }
-}
-
-// STEP 1: Use Playwright to bypass anti-bot and get session cookies
-log.info('Step 1: Using Playwright to establish session...');
 
 const crawler = new PlaywrightCrawler({
     proxyConfiguration,
     maxRequestRetries: 3,
+    useSessionPool: true,
+    sessionPoolOptions: {
+        maxPoolSize: 3,
+        sessionOptions: { maxUsageCount: 5 },
+    },
     maxConcurrency: 1,
     requestHandlerTimeoutSecs: 90,
     navigationTimeoutSecs: 45,
 
+    // Stealth fingerprints
     browserPoolOptions: {
         useFingerprints: true,
         fingerprintOptions: {
@@ -215,158 +77,209 @@ const crawler = new PlaywrightCrawler({
         },
     },
 
+    // Pre-navigation: Block resources & add stealth
     preNavigationHooks: [
         async ({ page }) => {
-            // Block heavy resources
+            // Block heavy resources for speed
             await page.route('**/*', (route) => {
                 const type = route.request().resourceType();
-                if (['image', 'font', 'media', 'stylesheet'].includes(type)) {
+                const url = route.request().url();
+
+                // Block images, fonts, media, and trackers
+                if (['image', 'font', 'media'].includes(type) ||
+                    url.includes('google-analytics') ||
+                    url.includes('googletagmanager') ||
+                    url.includes('facebook') ||
+                    url.includes('hotjar') ||
+                    url.includes('adsense')) {
                     return route.abort();
                 }
                 return route.continue();
             });
 
-            // Stealth
+            // Stealth scripts
             await page.addInitScript(() => {
                 Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+                window.chrome = { runtime: {} };
             });
         },
     ],
 
-    async requestHandler({ page, request, proxyInfo }) {
-        log.info(`Playwright: Loading ${request.url} to get cookies...`);
+    async requestHandler({ page, request, crawler: crawlerInstance }) {
+        const pageNo = request.userData?.pageNo || 1;
+        log.info(`Processing page ${pageNo}: ${request.url}`);
 
         // Wait for page load
         await page.waitForLoadState('domcontentloaded');
-        await randomDelay(2000, 3000);
 
-        // Handle cookie consent
+        // Handle cookie consent modal
         try {
-            const acceptBtn = await page.$('button:has-text("Accept all"), button:has-text("Accept")');
-            if (acceptBtn) {
+            const acceptBtn = page.locator('button:has-text("Accept all"), button:has-text("Accept")').first();
+            if (await acceptBtn.isVisible({ timeout: 3000 })) {
                 await acceptBtn.click();
-                await randomDelay(1000, 1500);
+                await page.waitForTimeout(500);
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) { /* Modal not present */ }
 
-        // Handle region modal
+        // Handle region/welcome modal
         try {
-            const closeBtn = await page.$('button[aria-label="Close"]');
-            if (closeBtn) {
+            const closeBtn = page.locator('button[aria-label="Close"]').first();
+            if (await closeBtn.isVisible({ timeout: 2000 })) {
                 await closeBtn.click();
-                await randomDelay(500, 1000);
+                await page.waitForTimeout(500);
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) { /* Modal not present */ }
 
-        // Wait for content
-        await page.waitForLoadState('networkidle').catch(() => { });
-        await randomDelay(1000, 2000);
+        // Wait for products to load
+        await page.waitForSelector('[data-testid^="product-item-id-"], .new-item-box__container', { timeout: 15000 }).catch(() => { });
+        await page.waitForTimeout(1500);
 
-        // Extract cookies
-        const cookies = await page.context().cookies();
-        sessionCookies = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-        log.info(`Got ${cookies.length} cookies from session`);
+        // Scroll to load lazy content
+        await page.evaluate(async () => {
+            for (let i = 0; i < 3; i++) {
+                window.scrollTo(0, document.body.scrollHeight * (i + 1) / 3);
+                await new Promise(r => setTimeout(r, 300));
+            }
+            window.scrollTo(0, 0);
+        });
+        await page.waitForTimeout(1000);
 
-        // Store proxy URL for got-scraping
-        if (proxyInfo) {
-            proxyUrl = `http://${proxyInfo.username}:${proxyInfo.password}@${proxyInfo.hostname}:${proxyInfo.port}`;
+        // Extract all product data from DOM
+        const items = await page.evaluate(() => {
+            const products = [];
+            const containers = document.querySelectorAll('[data-testid^="product-item-id-"], .new-item-box__container');
+
+            containers.forEach((container) => {
+                try {
+                    // Get product ID from data-testid
+                    const testId = container.getAttribute('data-testid') || '';
+                    const productId = testId.replace('product-item-id-', '') || '';
+
+                    // Get link and URL
+                    const link = container.querySelector('a.new-item-box__overlay, a[href*="/items/"]');
+                    const href = link?.getAttribute('href') || '';
+                    const url = href ? `https://www.vinted.com${href}` : `https://www.vinted.com/items/${productId}`;
+
+                    // Parse title attribute (contains all info)
+                    // Format: "Product name, brand: X, condition: Y, size: Z, $price"
+                    const titleAttr = link?.getAttribute('title') || '';
+
+                    // Extract from title attribute using regex
+                    const brandMatch = titleAttr.match(/brand:\s*([^,]+)/i);
+                    const conditionMatch = titleAttr.match(/condition:\s*([^,]+)/i);
+                    const sizeMatch = titleAttr.match(/size:\s*([^,]+)/i);
+                    const priceMatch = titleAttr.match(/\$[\d.,]+/);
+
+                    // Get product name (text before first comma or "brand:")
+                    let title = '';
+                    const nameMatch = titleAttr.match(/^([^,]+)/);
+                    if (nameMatch) {
+                        title = nameMatch[1].trim();
+                        // Remove price if it's at the end
+                        title = title.replace(/\s*\$[\d.,]+\s*$/, '').trim();
+                    }
+
+                    // Fallback: get from DOM elements
+                    if (!title) {
+                        const titleEl = container.querySelector('.new-item-box__description p:first-of-type, [class*="title"]');
+                        title = titleEl?.textContent?.trim() || '';
+                    }
+
+                    // Get brand from DOM if not in title
+                    let brand = brandMatch ? brandMatch[1].trim() : '';
+                    if (!brand) {
+                        const brandEl = container.querySelector('.new-item-box__description p:first-of-type');
+                        brand = brandEl?.textContent?.trim() || '';
+                    }
+
+                    // Get size and condition from second line
+                    let size = sizeMatch ? sizeMatch[1].trim() : '';
+                    let condition = conditionMatch ? conditionMatch[1].trim() : '';
+                    if (!size || !condition) {
+                        const infoEl = container.querySelector('.new-item-box__description p:nth-of-type(2)');
+                        const infoText = infoEl?.textContent?.trim() || '';
+                        // Format: "S / US 4-6 · Very good"
+                        const parts = infoText.split('·').map(p => p.trim());
+                        if (!size && parts[0]) size = parts[0];
+                        if (!condition && parts[1]) condition = parts[1];
+                    }
+
+                    // Get price
+                    let price = priceMatch ? priceMatch[0].replace('$', '') : '';
+                    if (!price) {
+                        const priceEl = container.querySelector('.new-item-box__title p, [class*="price"]');
+                        const priceText = priceEl?.textContent?.trim() || '';
+                        price = priceText.replace(/[^0-9.,]/g, '');
+                    }
+
+                    // Get image URL
+                    const imgEl = container.querySelector('img');
+                    const imageUrl = imgEl?.src || imgEl?.getAttribute('data-src') || '';
+
+                    // Get favorite count if available
+                    const favEl = container.querySelector('[class*="favourite"], [class*="heart"]');
+                    const favoriteCount = parseInt(favEl?.textContent?.replace(/\D/g, '') || '0', 10);
+
+                    if (productId || url) {
+                        products.push({
+                            product_id: productId,
+                            title: title || brand || 'Unknown',
+                            brand: brand,
+                            size: size,
+                            condition: condition,
+                            price: price,
+                            currency: 'USD',
+                            image_url: imageUrl,
+                            url: url,
+                            favorite_count: favoriteCount,
+                        });
+                    }
+                } catch (e) {
+                    // Skip problematic items
+                }
+            });
+
+            return products;
+        });
+
+        log.info(`Extracted ${items.length} items from page ${pageNo}`);
+
+        // Deduplicate and save
+        const newItems = [];
+        for (const item of items) {
+            const id = item.product_id || item.url;
+            if (id && !seenIds.has(id) && saved < RESULTS_WANTED) {
+                seenIds.add(id);
+                newItems.push(item);
+                saved++;
+            }
         }
 
-        // Try to extract initial data from page
-        const html = await page.content();
-        const initialItems = parseDomItems(html);
+        if (newItems.length > 0) {
+            await Dataset.pushData(newItems);
+            log.info(`Saved ${newItems.length} items. Total: ${saved}/${RESULTS_WANTED}`);
+        }
 
-        if (initialItems.length > 0) {
-            log.info(`Extracted ${initialItems.length} items from initial page`);
-            const newItems = initialItems.filter(item => {
-                if (seenIds.has(item.product_id)) return false;
-                seenIds.add(item.product_id);
-                return true;
-            }).slice(0, RESULTS_WANTED);
+        // Queue next page if needed
+        if (saved < RESULTS_WANTED && pageNo < MAX_PAGES) {
+            const nextPageUrl = new URL(request.url);
+            nextPageUrl.searchParams.set('page', String(pageNo + 1));
 
-            if (newItems.length > 0) {
-                await Dataset.pushData(newItems);
-                saved += newItems.length;
-                log.info(`Saved ${newItems.length} items. Total: ${saved}/${RESULTS_WANTED}`);
-            }
+            log.info(`Queueing page ${pageNo + 1}`);
+            await crawlerInstance.addRequests([{
+                url: nextPageUrl.href,
+                userData: { pageNo: pageNo + 1 },
+            }]);
         }
     },
 
     failedRequestHandler({ request }, error) {
-        log.error(`Playwright failed: ${error.message}`);
+        log.error(`Failed: ${request.url} - ${error.message}`);
     },
 });
 
-// Run Playwright once to get session
-await crawler.run([{ url: initialUrl }]);
-
-// STEP 2: Use got-scraping for fast data fetching
-if (saved < RESULTS_WANTED && sessionCookies) {
-    log.info('Step 2: Using got-scraping for fast data fetching...');
-
-    for (let page = 1; page <= MAX_PAGES && saved < RESULTS_WANTED; page++) {
-        await randomDelay(1500, 3000);
-
-        // Try API first (fastest)
-        log.info(`Fetching page ${page} via API...`);
-        const apiData = await fetchApiData(catalogId, page, sessionCookies, proxyUrl);
-
-        if (apiData && apiData.items && apiData.items.length > 0) {
-            log.info(`API returned ${apiData.items.length} items`);
-            const items = parseApiItems(apiData.items);
-
-            const newItems = items.filter(item => {
-                if (seenIds.has(item.product_id)) return false;
-                seenIds.add(item.product_id);
-                return true;
-            });
-
-            const toSave = newItems.slice(0, RESULTS_WANTED - saved);
-            if (toSave.length > 0) {
-                await Dataset.pushData(toSave);
-                saved += toSave.length;
-                log.info(`Saved ${toSave.length} items. Total: ${saved}/${RESULTS_WANTED}`);
-            }
-
-            // Check if more pages available
-            if (!apiData.pagination || page >= apiData.pagination.total_pages) {
-                log.info('No more pages available');
-                break;
-            }
-        } else {
-            // Fallback to HTML fetch
-            log.info(`API failed, fetching page ${page} via HTML...`);
-            const pageUrl = new URL(initialUrl);
-            pageUrl.searchParams.set('page', String(page));
-
-            try {
-                const html = await fetchWithGotScraping(pageUrl.href, sessionCookies, proxyUrl);
-                const items = parseDomItems(html);
-
-                if (items.length === 0) {
-                    log.warning('No items found in HTML, might be blocked');
-                    break;
-                }
-
-                const newItems = items.filter(item => {
-                    if (seenIds.has(item.product_id)) return false;
-                    seenIds.add(item.product_id);
-                    return true;
-                });
-
-                const toSave = newItems.slice(0, RESULTS_WANTED - saved);
-                if (toSave.length > 0) {
-                    await Dataset.pushData(toSave);
-                    saved += toSave.length;
-                    log.info(`Saved ${toSave.length} items from HTML. Total: ${saved}/${RESULTS_WANTED}`);
-                }
-            } catch (e) {
-                log.error(`HTML fetch failed: ${e.message}`);
-                break;
-            }
-        }
-    }
-}
-
-log.info(`Scraping completed. Total items saved: ${saved}`);
+await crawler.run([{ url: initialUrl, userData: { pageNo: 1 } }]);
+log.info(`Completed. Total items: ${saved}`);
 await Actor.exit();
