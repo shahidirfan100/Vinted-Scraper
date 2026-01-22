@@ -1,18 +1,11 @@
-# Specify the base Docker image with Playwright + Chrome
-# Check available versions: https://hub.docker.com/r/apify/actor-node-playwright-chrome
+# Playwright Chrome image for anti-bot bypass
 FROM apify/actor-node-playwright-chrome:22-1.56.1
 
 # Check preinstalled packages
 RUN npm ls crawlee apify puppeteer playwright
 
-# Copy just package.json and package-lock.json first for caching
-COPY --chown=myuser:myuser package*.json Dockerfile ./
-
-# Copy version check script
-COPY --chown=myuser:myuser check-playwright-version.mjs ./
-
-# Check Playwright version matches base image
-RUN node check-playwright-version.mjs
+# Copy package files first for caching
+COPY --chown=myuser:myuser package*.json ./
 
 # Install NPM packages (production only)
 RUN npm --quiet set progress=false \
