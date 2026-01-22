@@ -65,12 +65,12 @@
     "proxyConfiguration": {
       "title": "Proxy configuration",
       "type": "object",
-      "description": "Use Apify Proxy (RESIDENTIAL recommended for Vinted).",
+      "description": "Direct catalog URLs work with datacenter (SHADER). Keyword searches require RESIDENTIAL proxies.",
       "editor": "proxy",
       "default": {
         "useApifyProxy": true,
         "apifyProxyGroups": [
-          "RESIDENTIAL"
+          "SHADER"
         ]
       }
     }

@@ -41,13 +41,19 @@ function buildStartUrl() {
 }
 
 const initialUrl = buildStartUrl();
+const hasKeyword = keyword && keyword.trim().length > 0;
+
 log.info(`Starting Vinted scraper: ${initialUrl}`);
 log.info(`Target: ${RESULTS_WANTED} results, max ${MAX_PAGES} pages`);
+log.info(`Search mode: ${hasKeyword ? 'KEYWORD (residential proxy recommended)' : 'CATALOG (datacenter may work)'}`);
 
-// Create proxy configuration - try datacenter first, fallback to residential
+// Create proxy configuration
+// Keyword searches trigger stricter bot detection - use residential
+// Direct catalog URLs may work with datacenter
+const defaultProxyGroups = hasKeyword ? ['RESIDENTIAL'] : ['SHADER'];
 const proxyConfiguration = await Actor.createProxyConfiguration(proxyConfig || {
     useApifyProxy: true,
-    apifyProxyGroups: ['RESIDENTIAL'],
+    apifyProxyGroups: defaultProxyGroups,
 });
 
 let saved = 0;
