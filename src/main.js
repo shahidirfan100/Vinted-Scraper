@@ -112,7 +112,7 @@ function extractCondition(item) {
 }
 
 async function createApiSession({ proxyConfiguration, startUrl }) {
-    const proxySessionId = crypto.randomUUID();
+    const proxySessionId = crypto.randomBytes(12).toString('hex');
     const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl(proxySessionId) : undefined;
     const cookieStore = new Map();
 

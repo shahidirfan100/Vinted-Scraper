@@ -29,7 +29,8 @@
         "kids",
         "home"
       ],
-      "default": "women"
+      "default": "women",
+      "prefill": "women"
     },
     "minPrice": {
       "title": "Minimum price",
@@ -60,6 +61,7 @@
       "description": "A safety cap on the number of catalog pages to visit.",
       "minimum": 1,
       "default": 50,
+      "prefill": 5,
       "editor": "number"
     },
     "proxyConfiguration": {
@@ -68,6 +70,12 @@
       "description": "Residential proxies are recommended for reliable Vinted data collection.",
       "editor": "proxy",
       "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": [
+          "RESIDENTIAL"
+        ]
+      },
+      "prefill": {
         "useApifyProxy": true,
         "apifyProxyGroups": [
           "RESIDENTIAL"
