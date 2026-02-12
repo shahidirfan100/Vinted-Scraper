@@ -40,7 +40,7 @@ Export structured datasets for dashboards and recurring reports. Combine outputs
 | `maxPrice` | Integer | No | — | Maximum price filter (USD). |
 | `results_wanted` | Integer | No | `20` | Maximum number of listing records to collect. |
 | `max_pages` | Integer | No | `50` | Safety cap for how many catalog pages to scan. |
-| `proxyConfiguration` | Object | No | `{"useApifyProxy": true, "apifyProxyGroups": ["SHADER"]}` | Proxy settings for reliable data collection. |
+| `proxyConfiguration` | Object | No | `{"useApifyProxy": true, "apifyProxyGroups": ["RESIDENTIAL"]}` | Proxy settings for reliable data collection. |
 
 ---
 

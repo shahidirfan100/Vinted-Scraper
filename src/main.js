@@ -138,7 +138,8 @@ async function createApiSession({ proxyConfiguration, startUrl }) {
     const accessToken = cookieStore.get('access_token_web');
 
     if (!accessToken) {
-        throw new Error('Missing access_token_web after bootstrap request.');
+        const responseHint = String(response.body || '').slice(0, 200).replace(/\s+/g, ' ');
+        throw new Error(`Missing access_token_web after bootstrap request. Status: ${response.statusCode}. Response hint: ${responseHint}`);
     }
 
     return {
@@ -218,9 +219,7 @@ function normalizeItem(item) {
     };
 }
 
-await Actor.init();
-
-try {
+await Actor.main(async () => {
     const input = (await Actor.getInput()) || {};
     const {
         startUrl,
@@ -254,8 +253,7 @@ try {
         maxPrice,
     });
 
-    const hasKeyword = String(keyword || '').trim().length > 0;
-    const defaultProxyGroups = hasKeyword ? ['RESIDENTIAL'] : ['SHADER'];
+    const defaultProxyGroups = ['RESIDENTIAL'];
     const proxyConfiguration = await Actor.createProxyConfiguration(proxyConfig || {
         useApifyProxy: true,
         apifyProxyGroups: defaultProxyGroups,
@@ -345,6 +343,4 @@ try {
     }
 
     log.info(`Completed. Total items saved: ${saved}`);
-} finally {
-    await Actor.exit();
-}
+});

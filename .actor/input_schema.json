@@ -65,12 +65,12 @@
     "proxyConfiguration": {
       "title": "Proxy configuration",
       "type": "object",
-      "description": "Direct catalog URLs work with datacenter (SHADER). Keyword searches require RESIDENTIAL proxies.",
+      "description": "Residential proxies are recommended for reliable Vinted data collection.",
       "editor": "proxy",
       "default": {
         "useApifyProxy": true,
         "apifyProxyGroups": [
-          "SHADER"
+          "RESIDENTIAL"
         ]
       }
     }
