@@ -1,6 +1,6 @@
 {
   "name": "vinted-scraper",
-  "version": "1.0.0",
+  "version": "1.0",
   "description": "Scrape product listings from Vinted marketplace. Extract titles, prices, brands, sizes, and more.",
   "type": "module",
   "main": "src/main.js",

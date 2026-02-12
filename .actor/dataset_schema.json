@@ -6,12 +6,19 @@
       "title": "Overview",
       "transformation": {
         "fields": [
+          "page",
+          "product_id",
           "title",
           "brand",
           "size",
           "condition",
           "price",
           "total_price",
+          "currency",
+          "service_fee",
+          "favorite_count",
+          "view_count",
+          "seller_username",
           "image_url",
           "url"
         ]
@@ -19,6 +26,14 @@
       "display": {
         "component": "table",
         "properties": {
+          "page": {
+            "label": "Page",
+            "format": "number"
+          },
+          "product_id": {
+            "label": "Product ID",
+            "format": "text"
+          },
           "title": {
             "label": "Title",
             "format": "text"
@@ -41,6 +56,26 @@
           },
           "total_price": {
             "label": "Total Price",
+            "format": "text"
+          },
+          "currency": {
+            "label": "Currency",
+            "format": "text"
+          },
+          "service_fee": {
+            "label": "Service Fee",
+            "format": "text"
+          },
+          "favorite_count": {
+            "label": "Favorites",
+            "format": "number"
+          },
+          "view_count": {
+            "label": "Views",
+            "format": "number"
+          },
+          "seller_username": {
+            "label": "Seller",
             "format": "text"
           },
           "image_url": {

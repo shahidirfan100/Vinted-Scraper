@@ -1,71 +1,86 @@
-# Vinted Scraper
+# Vinted Listings Scraper
 
-Extract product listings from Vinted, the popular marketplace for secondhand fashion. Collect detailed information about clothing, accessories, and home items including prices, brands, sizes, conditions, and seller data.
-
----
+Extract and collect Vinted marketplace listings in a fast, structured dataset. Gather product, pricing, seller, and engagement information for research, monitoring, and analysis. Built for repeatable runs with configurable filters, pagination, and result limits.
 
 ## Features
 
-- **Comprehensive product data** - Extract titles, prices, brands, sizes, conditions, and images
-- **Flexible search** - Filter by keyword, category, and price range
-- **Fast extraction** - Uses API interception for maximum speed when available
-- **Reliable fallback** - DOM parsing ensures data is captured even if API changes
-- **Anti-bot bypass** - Built-in stealth features and residential proxy support
-- **Pagination support** - Automatically navigates through multiple catalog pages
-- **Deduplication** - Ensures no duplicate products in your dataset
-
----
+- **Comprehensive listing data** — Collect product details, seller profile info, pricing, fees, and engagement metrics.
+- **Flexible search controls** — Filter with keyword, category, and min/max price inputs.
+- **Automatic pagination** — Continue collecting across pages until target result count or page limit is reached.
+- **Duplicate protection** — Keeps dataset clean by skipping repeated listing IDs.
+- **Production-ready output** — Returns consistent structured records for analysis pipelines and automation.
 
 ## Use Cases
 
-- **Price comparison** - Compare prices across different sellers
-- **Market research** - Analyze pricing trends for specific brands or categories
-- **Inventory sourcing** - Find items for resale businesses
-- **Fashion trend analysis** - Track popular brands, sizes, and styles
-- **Competitor monitoring** - Monitor competitor pricing and inventory
+### Price Monitoring
+Track asking prices and total buyer cost across categories or keywords. Use scheduled runs to monitor market changes over time.
+
+### Resale Sourcing
+Find inventory opportunities by filtering listings with keyword and price ranges. Compare brands, conditions, and seller signals before buying.
+
+### Market Intelligence
+Build datasets for trend analysis by category, brand, size, and condition. Measure listing performance using favorites and view counts.
+
+### Competitive Research
+Monitor seller profiles, pricing behavior, and promoted listings. Identify opportunities and pricing gaps in your target segment.
+
+### Reporting and BI
+Export structured datasets for dashboards and recurring reports. Combine outputs with spreadsheet tools, databases, and workflow platforms.
 
 ---
 
 ## Input Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `startUrl` | String | Direct Vinted catalog or search URL to start scraping from |
-| `keyword` | String | Search keyword(s) to filter products |
-| `category` | String | Product category: women, men, kids, or home |
-| `minPrice` | Number | Minimum price filter (USD) |
-| `maxPrice` | Number | Maximum price filter (USD) |
-| `results_wanted` | Number | Maximum number of products to collect (default: 20) |
-| `max_pages` | Number | Maximum pages to scrape (default: 10) |
-| `proxyConfiguration` | Object | Proxy settings (RESIDENTIAL recommended) |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `startUrl` | String | No | — | Vinted catalog or search URL to start from. |
+| `keyword` | String | No | `""` | Search phrase to filter listings. |
+| `category` | String | No | `"women"` | Category shortcut: `women`, `men`, `kids`, or `home`. |
+| `minPrice` | Integer | No | — | Minimum price filter (USD). |
+| `maxPrice` | Integer | No | — | Maximum price filter (USD). |
+| `results_wanted` | Integer | No | `20` | Maximum number of listing records to collect. |
+| `max_pages` | Integer | No | `50` | Safety cap for how many catalog pages to scan. |
+| `proxyConfiguration` | Object | No | `{"useApifyProxy": true, "apifyProxyGroups": ["SHADER"]}` | Proxy settings for reliable data collection. |
 
 ---
 
 ## Output Data
 
-Each product in the dataset includes:
+Each dataset item contains:
 
-| Field | Description |
-|-------|-------------|
-| `product_id` | Unique Vinted product identifier |
-| `title` | Product title/name |
-| `brand` | Brand name |
-| `size` | Size (e.g., S, M, L, US 8) |
-| `condition` | Product condition (New, Very good, Good, etc.) |
-| `price` | Listed price |
-| `currency` | Currency code (e.g., USD) |
-| `total_price` | Total price including fees |
-| `image_url` | Main product image URL |
-| `url` | Direct link to the product page |
-| `seller` | Seller username |
-| `favorite_count` | Number of favorites/likes |
-| `view_count` | Number of views |
+| Field | Type | Description |
+|-------|------|-------------|
+| `product_id` | String | Unique listing identifier. |
+| `title` | String | Listing title. |
+| `brand` | String | Brand name (if available). |
+| `size` | String | Size label, or `Not specified` when unavailable. |
+| `condition` | String | Item condition text. |
+| `price` | String | Listing price amount. |
+| `total_price` | String | Total buyer price amount. |
+| `currency` | String | Currency code. |
+| `service_fee` | String | Buyer service fee amount. |
+| `image_url` | String | Main image URL. |
+| `image_full_url` | String | Full-size image URL when available. |
+| `url` | String | Direct link to listing page. |
+| `favorite_count` | Number | Number of favorites. |
+| `view_count` | Number | Number of views. |
+| `is_favourite` | Boolean | Whether the listing is marked favorite for the current session. |
+| `is_visible` | Boolean | Listing visibility status. |
+| `is_promoted` | Boolean | Whether listing is promoted. |
+| `content_source` | String | Source label returned by marketplace. |
+| `seller_id` | String | Seller ID. |
+| `seller_username` | String | Seller username/login. |
+| `seller_profile_url` | String | Seller profile URL. |
+| `seller_is_business` | Boolean | Business seller indicator. |
+| `search_score` | Number or Null | Ranking score when provided. |
+| `matched_queries` | Array | Matched query terms when available. |
+| `page` | Number | Page number where listing was collected. |
 
 ---
 
 ## Usage Examples
 
-### Scrape Women's Clothing
+### Basic Category Extraction
 
 ```json
 {
@@ -74,25 +89,31 @@ Each product in the dataset includes:
 }
 ```
 
-### Search for Specific Items
+### Keyword + Price Filtering
 
 ```json
 {
-  "keyword": "vintage levis jeans",
+  "keyword": "vintage dress",
   "category": "women",
-  "minPrice": 20,
-  "maxPrice": 100,
-  "results_wanted": 30
+  "minPrice": 15,
+  "maxPrice": 90,
+  "results_wanted": 120,
+  "max_pages": 20
 }
 ```
 
-### Scrape Men's Shoes
+### High-Volume Collection
 
 ```json
 {
   "startUrl": "https://www.vinted.com/catalog/5-men",
   "keyword": "nike",
-  "results_wanted": 100
+  "results_wanted": 500,
+  "max_pages": 50,
+  "proxyConfiguration": {
+    "useApifyProxy": true,
+    "apifyProxyGroups": ["RESIDENTIAL"]
+  }
 }
 ```
 
@@ -102,62 +123,114 @@ Each product in the dataset includes:
 
 ```json
 {
-  "product_id": "8000076569",
-  "title": "Vintage Low Rise Jeans",
-  "brand": "Levi's",
+  "product_id": "8158648463",
+  "title": "Zara Ribbed Polo Dress in Black Size S",
+  "brand": "Zara",
   "size": "S / US 4-6",
   "condition": "Very good",
-  "price": "25.00",
+  "price": "6.9",
+  "total_price": "7.95",
   "currency": "USD",
-  "total_price": "28.50",
-  "image_url": "https://images1.vinted.net/...",
-  "url": "https://www.vinted.com/items/8000076569",
-  "seller": "fashionista123",
-  "favorite_count": 12,
-  "view_count": 145
+  "service_fee": "1.05",
+  "image_url": "https://images1.vinted.net/t/.../f800/1770901384.jpeg",
+  "image_full_url": "https://images1.vinted.net/tc/.../1770901384.jpeg",
+  "url": "https://www.vinted.com/items/8158648463-zara-ribbed-polo-dress-in-black-size-s",
+  "favorite_count": 17,
+  "view_count": 0,
+  "is_favourite": false,
+  "is_visible": true,
+  "is_promoted": false,
+  "content_source": "search",
+  "seller_id": "83773268",
+  "seller_username": "hungryhopper",
+  "seller_profile_url": "https://www.vinted.com/member/83773268-hungryhopper",
+  "seller_is_business": false,
+  "search_score": null,
+  "matched_queries": [],
+  "page": 2
 }
 ```
 
 ---
 
-## Tips
+## Tips for Best Results
 
-- **Use category URLs** - Starting with a category URL is faster than keyword search
-- **Set realistic limits** - Start with 20-50 results to test, then scale up
-- **Use residential proxies** - Vinted has anti-bot protection; residential proxies are recommended
-- **Price filters** - Use minPrice/maxPrice to narrow results and reduce scraping time
-- **Monitor runs** - Check the logs for any blocking issues or empty results
+### Choose Good Start URLs
+- Use valid Vinted catalog URLs for your target market.
+- For broad collection, start from a category URL.
+- For narrow collection, combine `keyword` with price filters.
+
+### Tune Collection Limits
+- Use smaller `results_wanted` values first for quick validation.
+- Increase `max_pages` for larger runs.
+- Match `results_wanted` to your analysis needs to control run cost.
+
+### Use Proxies for Stability
+- Residential proxies are recommended for keyword-heavy or high-volume runs.
+- Keep default proxy settings for normal category runs.
+- If results drop, retry with stronger proxy settings.
+
+### Handle Missing Fields
+- Some listings do not publish all attributes.
+- Expect occasional `Not specified` sizes or empty optional fields.
+- Use multiple fields (`title`, `brand`, `condition`) in downstream logic.
 
 ---
 
 ## Integrations
 
-Export your data to:
+Connect your dataset with:
 
-- **Google Sheets** - For easy analysis and sharing
-- **Airtable** - Build databases of products
-- **Zapier** - Automate workflows with 3000+ apps
-- **Webhooks** - Send data to your own systems in real-time
-- **API** - Access data programmatically via Apify API
+- **Google Sheets** — Share and analyze listing data quickly.
+- **Airtable** — Build searchable listing databases.
+- **Looker Studio / BI tools** — Create dashboards for trends and pricing.
+- **Make** — Automate collection and post-processing flows.
+- **Zapier** — Trigger actions in connected business apps.
+- **Webhooks** — Push results to custom systems in real time.
+
+### Export Formats
+
+- **JSON** — Best for APIs and custom apps.
+- **CSV** — Best for spreadsheet workflows.
+- **Excel** — Best for business reporting.
+- **XML** — Best for system interoperability.
 
 ---
 
-## FAQ
+## Frequently Asked Questions
 
-**Q: Why am I getting empty results?**
-A: Vinted has anti-bot protection. Ensure you're using residential proxies and the default concurrency settings.
+### How many listings can I collect?
+You can collect as many as available, constrained by `results_wanted`, `max_pages`, and marketplace availability.
 
-**Q: How often can I run this scraper?**
-A: We recommend spacing runs at least 15-30 minutes apart to avoid rate limiting.
+### Does it handle pagination automatically?
+Yes. It keeps collecting across pages until limits are reached or no more listings are available.
 
-**Q: Does this scraper work for all Vinted regions?**
-A: This scraper is optimized for Vinted US (vinted.com). For other regions, use the appropriate domain in startUrl.
+### Why do some records have `size: "Not specified"`?
+Some listings do not provide a size value in the marketplace data. The actor keeps these records and labels missing size clearly.
 
-**Q: Can I scrape product details pages?**
-A: The current version extracts data from catalog listings. Detail page scraping can be added on request.
+### Can I run this on a schedule?
+Yes. You can schedule runs in Apify and maintain fresh datasets continuously.
+
+### What if my results are lower than expected?
+Increase `max_pages`, widen filters, and use residential proxies for more stable access.
+
+### Can I filter by price?
+Yes. Use `minPrice` and `maxPrice` to limit results to your target range.
+
+---
+
+## Support
+
+For issues, improvements, or feature requests, use the Actor’s Issues tab in Apify Console.
+
+### Resources
+
+- [Apify Documentation](https://docs.apify.com/)
+- [Apify API Reference](https://docs.apify.com/api/v2)
+- [Apify Schedules](https://docs.apify.com/platform/schedules)
 
 ---
 
 ## Legal Notice
 
-This scraper is provided for educational and research purposes. Users are responsible for ensuring their use complies with Vinted's Terms of Service and applicable laws. Only scrape publicly available data and respect rate limits. The developer assumes no liability for misuse.
+This actor is intended for legitimate data collection and analysis. You are responsible for complying with website terms, local laws, and data usage regulations. Collect and use data responsibly.
