@@ -3,11 +3,5 @@
   "keyword": "dress",
   "category": "women",
   "results_wanted": 20,
-  "max_pages": 5,
-  "proxyConfiguration": {
-    "useApifyProxy": true,
-    "apifyProxyGroups": [
-      "RESIDENTIAL"
-    ]
-  }
+  "max_pages": 5
 }
