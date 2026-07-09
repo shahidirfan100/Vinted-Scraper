@@ -61,6 +61,9 @@ Each dataset item contains:
 | `service_fee` | String | Buyer service fee amount. |
 | `image_url` | String | Main image URL. |
 | `image_full_url` | String | Full-size image URL when available. |
+| `image_dominant_color` | String | Dominant color hex of the main image. |
+| `image_dominant_color_opaque` | String | Opaque dominant color hex of the main image. |
+| `image_count` | Number | Number of photos available for the listing. |
 | `url` | String | Direct link to listing page. |
 | `favorite_count` | Number | Number of favorites. |
 | `view_count` | Number | Number of views. |
@@ -71,7 +74,9 @@ Each dataset item contains:
 | `seller_id` | String | Seller ID. |
 | `seller_username` | String | Seller username/login. |
 | `seller_profile_url` | String | Seller profile URL. |
+| `seller_avatar_url` | String | Seller avatar image URL (when available). |
 | `seller_is_business` | Boolean | Business seller indicator. |
+| `show_1st_time_discount` | Boolean | Whether a first-time seller discount is applied. |
 | `search_score` | Number or Null | Ranking score when provided. |
 | `matched_queries` | Array | Matched query terms when available. |
 | `page` | Number | Page number where listing was collected. |
@@ -123,31 +128,36 @@ Each dataset item contains:
 
 ```json
 {
-  "product_id": "8158648463",
-  "title": "Zara Ribbed Polo Dress in Black Size S",
-  "brand": "Zara",
-  "size": "S / US 4-6",
+  "product_id": "9359134702",
+  "title": "Authentic Nike Dunk Highs",
+  "brand": "Nike",
+  "size": "5",
   "condition": "Very good",
-  "price": "6.9",
-  "total_price": "7.95",
+  "price": "20.0",
+  "total_price": "21.7",
   "currency": "USD",
-  "service_fee": "1.05",
-  "image_url": "https://images1.vinted.net/t/.../f800/1770901384.jpeg",
-  "image_full_url": "https://images1.vinted.net/tc/.../1770901384.jpeg",
-  "url": "https://www.vinted.com/items/8158648463-zara-ribbed-polo-dress-in-black-size-s",
-  "favorite_count": 17,
+  "service_fee": "1.7",
+  "image_url": "https://images1.vinted.net/t/01_00f8a_zEtsWMXTtwNVDEiUu9SGPqWB/f800/1783601625.jpeg?s=37bf06a57cb621f8807420e22d1f332ee480ae7a",
+  "image_full_url": "https://images1.vinted.net/tc/01_00f8a_zEtsWMXTtwNVDEiUu9SGPqWB/1783601625.jpeg?s=5e27af659fa9888ba1d03053950ce219d0d34563",
+  "image_dominant_color": "#A5827E",
+  "image_dominant_color_opaque": "#E4DAD8",
+  "image_count": 9,
+  "url": "https://www.vinted.com/items/9359134702-authentic-nike-dunk-highs",
+  "favorite_count": 1,
   "view_count": 0,
   "is_favourite": false,
   "is_visible": true,
-  "is_promoted": false,
-  "content_source": "search",
-  "seller_id": "83773268",
-  "seller_username": "hungryhopper",
-  "seller_profile_url": "https://www.vinted.com/member/83773268-hungryhopper",
+  "is_promoted": true,
+  "content_source": "catalog_promoted_items",
+  "seller_id": "3167703720",
+  "seller_username": "elenat7758",
+  "seller_profile_url": "https://www.vinted.com/member/3167703720-elenat7758",
+  "seller_avatar_url": "",
   "seller_is_business": false,
-  "search_score": null,
+  "show_1st_time_discount": false,
+  "search_score": 1,
   "matched_queries": [],
-  "page": 2
+  "page": 1
 }
 ```
 

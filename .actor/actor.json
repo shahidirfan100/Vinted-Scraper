@@ -2,9 +2,6 @@
   "actorSpecification": 1,
   "name": "vinted-scraper",
   "version": "1.0",
-  "meta": {
-    "generatedBy": "gpt-5-codex"
-  },
   "buildTag": "latest",
   "dockerfile": "../Dockerfile",
   "readme": "../README.md",

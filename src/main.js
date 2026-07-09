@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+
 import { Actor, log } from 'apify';
 import { gotScraping } from 'crawlee';
 
@@ -17,7 +18,7 @@ function toPositiveInt(value, fallback) {
 }
 
 function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
 
 function jitterBackoff(attempt) {
@@ -26,7 +27,14 @@ function jitterBackoff(attempt) {
 }
 
 function buildStartUrl({ startUrl, keyword, category, minPrice, maxPrice }) {
-    if (startUrl) return startUrl;
+    if (startUrl) {
+        try {
+            const parsed = new URL(startUrl);
+            return parsed.href;
+        } catch {
+            log.warning(`Invalid startUrl "${startUrl}". Falling back to category URL.`);
+        }
+    }
 
     const normalizedCategory = String(category || 'women').toLowerCase();
     const categoryEntry = CATEGORY_MAP[normalizedCategory] || CATEGORY_MAP.women;
@@ -40,7 +48,13 @@ function buildStartUrl({ startUrl, keyword, category, minPrice, maxPrice }) {
 }
 
 function normalizeApiParams(initialUrl, { keyword, minPrice, maxPrice }) {
-    const url = new URL(initialUrl);
+    let url;
+    try {
+        url = new URL(initialUrl);
+    } catch {
+        log.warning(`Invalid URL for normalizeApiParams: "${initialUrl}". Using fallback.`);
+        url = new URL('https://www.vinted.com/catalog/1904-women');
+    }
     const params = new URLSearchParams(url.searchParams);
     params.delete('page');
     params.delete('per_page');
@@ -64,7 +78,12 @@ function normalizeApiParams(initialUrl, { keyword, minPrice, maxPrice }) {
 }
 
 function updateCookieStore(cookieStore, setCookieHeader) {
-    const setCookies = Array.isArray(setCookieHeader) ? setCookieHeader : (setCookieHeader ? [setCookieHeader] : []);
+    let setCookies = [];
+    if (Array.isArray(setCookieHeader)) {
+        setCookies = setCookieHeader;
+    } else if (setCookieHeader) {
+        setCookies = [setCookieHeader];
+    }
     for (const rawCookie of setCookies) {
         const pair = rawCookie.split(';', 1)[0];
         const separatorIndex = pair.indexOf('=');
@@ -112,43 +131,58 @@ function extractCondition(item) {
 }
 
 async function createApiSession({ proxyConfiguration, startUrl }) {
-    const proxySessionId = crypto.randomBytes(12).toString('hex');
-    const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl(proxySessionId) : undefined;
-    const cookieStore = new Map();
+    let lastError;
 
-    const response = await gotScraping({
-        url: startUrl,
-        proxyUrl,
-        throwHttpErrors: false,
-        timeout: { request: 60000 },
-        headers: {
-            'user-agent': USER_AGENT,
-            'accept-language': 'en-US,en;q=0.9',
-            accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-    });
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            const proxySessionId = crypto.randomBytes(12).toString('hex');
+            const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl(proxySessionId) : undefined;
+            const cookieStore = new Map();
 
-    updateCookieStore(cookieStore, response.headers['set-cookie']);
+            const response = await gotScraping({
+                url: startUrl,
+                proxyUrl,
+                throwHttpErrors: false,
+                timeout: { request: 60000 },
+                headers: {
+                    'user-agent': USER_AGENT,
+                    'accept-language': 'en-US,en;q=0.9',
+                    accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                },
+            });
 
-    if (response.statusCode >= 400) {
-        throw new Error(`Session bootstrap failed with status ${response.statusCode}`);
+            updateCookieStore(cookieStore, response.headers['set-cookie']);
+
+            if (response.statusCode >= 400) {
+                throw new Error(`Session bootstrap failed with status ${response.statusCode}`);
+            }
+
+            const anonId = cookieStore.get('anon_id') || crypto.randomUUID();
+            const accessToken = cookieStore.get('access_token_web');
+
+            if (!accessToken) {
+                const responseHint = String(response.body || '').slice(0, 200).replace(/\s+/g, ' ');
+                throw new Error(`Missing access_token_web after bootstrap request. Status: ${response.statusCode}. Response hint: ${responseHint}`);
+            }
+
+            return {
+                proxyUrl,
+                cookieStore,
+                anonId,
+                accessToken,
+                csrfToken: crypto.randomUUID(),
+            };
+        } catch (err) {
+            lastError = err;
+            if (attempt < 3) {
+                const waitMs = jitterBackoff(attempt);
+                log.warning(`Session bootstrap attempt ${attempt}/3 failed: ${err.message}. Retrying in ${waitMs}ms.`);
+                await sleep(waitMs);
+            }
+        }
     }
 
-    const anonId = cookieStore.get('anon_id') || crypto.randomUUID();
-    const accessToken = cookieStore.get('access_token_web');
-
-    if (!accessToken) {
-        const responseHint = String(response.body || '').slice(0, 200).replace(/\s+/g, ' ');
-        throw new Error(`Missing access_token_web after bootstrap request. Status: ${response.statusCode}. Response hint: ${responseHint}`);
-    }
-
-    return {
-        proxyUrl,
-        cookieStore,
-        anonId,
-        accessToken,
-        csrfToken: crypto.randomUUID(),
-    };
+    throw lastError || new Error('Session bootstrap failed after 3 attempts.');
 }
 
 async function requestCatalogPage({
@@ -162,25 +196,30 @@ async function requestCatalogPage({
     query.set('page', String(pageNo));
     query.set('per_page', String(perPage));
 
-    const response = await gotScraping({
-        url: `${API_BASE}?${query.toString()}`,
-        proxyUrl: session.proxyUrl,
-        throwHttpErrors: false,
-        timeout: { request: 60000 },
-        headers: {
-            'user-agent': USER_AGENT,
-            'accept-language': 'en-US,en;q=0.9',
-            accept: 'application/json, text/plain, */*',
-            referer: startUrl,
-            cookie: buildCookieHeader(session.cookieStore),
-            'x-anon-id': session.anonId,
-            'x-csrf-token': session.csrfToken,
-            authorization: `Bearer ${session.accessToken}`,
-        },
-    });
+    try {
+        const response = await gotScraping({
+            url: `${API_BASE}?${query.toString()}`,
+            proxyUrl: session.proxyUrl,
+            throwHttpErrors: false,
+            timeout: { request: 60000 },
+            headers: {
+                'user-agent': USER_AGENT,
+                'accept-language': 'en-US,en;q=0.9',
+                accept: 'application/json, text/plain, */*',
+                referer: startUrl,
+                cookie: buildCookieHeader(session.cookieStore),
+                'x-anon-id': session.anonId,
+                'x-csrf-token': session.csrfToken,
+                authorization: `Bearer ${session.accessToken}`,
+            },
+        });
 
-    updateCookieStore(session.cookieStore, response.headers['set-cookie']);
-    return response;
+        updateCookieStore(session.cookieStore, response.headers['set-cookie']);
+        return response;
+    } catch (err) {
+        log.warning(`Network error on page ${pageNo}: ${err.message}`);
+        return { statusCode: 0, body: err.message };
+    }
 }
 
 function normalizeItem(item) {
@@ -190,6 +229,7 @@ function normalizeItem(item) {
     const path = item.path || '';
     const fullUrl = item.url || (path ? `https://www.vinted.com${path}` : '');
     const priceCurrency = item.price?.currency_code || item.total_item_price?.currency_code || 'USD';
+    const userPhotoUrl = item.user?.photo?.url || item.user?.photo?.full_size_url || '';
 
     return {
         product_id: id,
@@ -203,6 +243,9 @@ function normalizeItem(item) {
         service_fee: item.service_fee?.amount || '',
         image_url: item.photo?.url || item.photos?.[0]?.url || '',
         image_full_url: item.photo?.full_size_url || item.photo?.url || item.photos?.[0]?.full_size_url || '',
+        image_dominant_color: item.photo?.dominant_color || '',
+        image_dominant_color_opaque: item.photo?.dominant_color_opaque || '',
+        image_count: item.photos?.length || 0,
         url: fullUrl,
         favorite_count: Number(item.favourite_count || 0),
         view_count: Number(item.view_count || 0),
@@ -213,7 +256,9 @@ function normalizeItem(item) {
         seller_id: item.user?.id != null ? String(item.user.id) : '',
         seller_username: item.user?.login || '',
         seller_profile_url: item.user?.profile_url || '',
+        seller_avatar_url: userPhotoUrl,
         seller_is_business: Boolean(item.user?.business),
+        show_1st_time_discount: Boolean(item.show_1st_time_seller_discount),
         search_score: item.search_tracking_params?.score ?? null,
         matched_queries: item.search_tracking_params?.matched_queries || [],
     };
@@ -225,8 +270,8 @@ await Actor.main(async () => {
         startUrl,
         keyword = '',
         category = 'women',
-        minPrice,
-        maxPrice,
+        minPrice: minPriceRaw,
+        maxPrice: maxPriceRaw,
         results_wanted: resultsWantedRaw = 20,
         max_pages: maxPagesRaw = 50,
         proxyConfiguration: proxyConfig,
@@ -236,8 +281,16 @@ await Actor.main(async () => {
     const maxPages = toPositiveInt(maxPagesRaw, 50);
     const perPage = 96;
 
+    let minPrice = minPriceRaw;
+    let maxPrice = maxPriceRaw;
     if (minPrice != null && maxPrice != null && Number(minPrice) > Number(maxPrice)) {
-        throw new Error(`Invalid price range: minPrice (${minPrice}) is greater than maxPrice (${maxPrice}).`);
+        log.warning(`Invalid price range: minPrice (${minPrice}) > maxPrice (${maxPrice}). Ignoring price filters.`);
+        minPrice = undefined;
+        maxPrice = undefined;
+    }
+
+    if (!startUrl && !keyword) {
+        log.warning('No startUrl or keyword provided. Using default category.');
     }
 
     const initialUrl = buildStartUrl({
@@ -283,8 +336,10 @@ await Actor.main(async () => {
                     pageData = JSON.parse(response.body);
                     break;
                 } catch (error) {
-                    throw new Error(`Failed to parse JSON from catalog API: ${error.message}`);
+                    log.warning(`Malformed JSON on page ${pageNo}, attempt ${attempt}/4: ${error.message}`);
+                    await sleep(jitterBackoff(attempt));
                 }
+                continue;
             }
 
             if (response.statusCode === 401 || response.statusCode === 403) {
@@ -295,12 +350,15 @@ await Actor.main(async () => {
                 log.warning(`Transient error ${response.statusCode} on page ${pageNo}, retry ${attempt}/4 in ${waitMs}ms.`);
                 await sleep(waitMs);
             } else {
-                throw new Error(`Catalog API returned status ${response.statusCode}: ${response.body?.slice(0, 300) || 'No body'}`);
+                const waitMs = jitterBackoff(attempt);
+                log.warning(`Unexpected status ${response.statusCode} on page ${pageNo}, retry ${attempt}/4 in ${waitMs}ms.`);
+                await sleep(waitMs);
             }
         }
 
         if (!pageData) {
-            throw new Error(`Failed to fetch page ${pageNo} after retries.`);
+            log.warning(`Failed to fetch page ${pageNo} after retries. Skipping.`);
+            continue;
         }
 
         const items = Array.isArray(pageData.items) ? pageData.items : [];
