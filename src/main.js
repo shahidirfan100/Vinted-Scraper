@@ -1,10 +1,5 @@
-import crypto from 'node:crypto';
-
 import { Actor, log } from 'apify';
-import { gotScraping } from 'crawlee';
-
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
-const API_BASE = 'https://www.vinted.com/api/v2/catalog/items';
+import { Impit } from 'impit';
 
 const CATEGORY_MAP = {
     women: { id: '1904', slug: '1904-women' },
@@ -18,19 +13,20 @@ function toPositiveInt(value, fallback) {
 }
 
 function sleep(ms) {
-    return new Promise((resolve) => { setTimeout(resolve, ms); });
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
 }
 
 function jitterBackoff(attempt) {
-    const base = 800 * (2 ** (attempt - 1));
+    const base = 800 * 2 ** (attempt - 1);
     return base + Math.floor(Math.random() * 600);
 }
 
 function buildStartUrl({ startUrl, keyword, category, minPrice, maxPrice }) {
     if (startUrl) {
         try {
-            const parsed = new URL(startUrl);
-            return parsed.href;
+            return new URL(startUrl).href;
         } catch {
             log.warning(`Invalid startUrl "${startUrl}". Falling back to category URL.`);
         }
@@ -47,63 +43,86 @@ function buildStartUrl({ startUrl, keyword, category, minPrice, maxPrice }) {
     return url.href;
 }
 
-function normalizeApiParams(initialUrl, { keyword, minPrice, maxPrice }) {
-    let url;
-    try {
-        url = new URL(initialUrl);
-    } catch {
-        log.warning(`Invalid URL for normalizeApiParams: "${initialUrl}". Using fallback.`);
-        url = new URL('https://www.vinted.com/catalog/1904-women');
+// Vinted's /api/v2/catalog/items JSON endpoint was retired in 2026 and now returns 404.
+// The catalog page still server-renders the full item list inside the Next.js RSC payload,
+// which is streamed through self.__next_f.push([1, "<chunk>"]) calls.
+function extractFlightPayload(html) {
+    const chunks = [];
+    const re = /self\.__next_f\.push\(\[1,\s*("(?:[^"\\]|\\.)*")\s*\]\)/g;
+    let match;
+    while ((match = re.exec(html)) !== null) {
+        try {
+            chunks.push(JSON.parse(match[1]));
+        } catch {
+            // Ignore malformed flight chunk and keep streaming.
+        }
     }
-    const params = new URLSearchParams(url.searchParams);
-    params.delete('page');
-    params.delete('per_page');
-
-    const catalogIds = [
-        ...params.getAll('catalog[]'),
-        ...params.getAll('catalog_ids[]'),
-    ].filter(Boolean);
-    if (catalogIds.length > 0) params.set('catalog_ids', catalogIds.join(','));
-    params.delete('catalog[]');
-    params.delete('catalog_ids[]');
-
-    const pathCatalogId = url.pathname.match(/\/catalog\/(\d+)/)?.[1];
-    if (!params.get('catalog_ids') && pathCatalogId) params.set('catalog_ids', pathCatalogId);
-
-    if (keyword) params.set('search_text', keyword);
-    if (minPrice != null) params.set('price_from', String(minPrice));
-    if (maxPrice != null) params.set('price_to', String(maxPrice));
-
-    return params;
+    return chunks.join('');
 }
 
-function updateCookieStore(cookieStore, setCookieHeader) {
-    let setCookies = [];
-    if (Array.isArray(setCookieHeader)) {
-        setCookies = setCookieHeader;
-    } else if (setCookieHeader) {
-        setCookies = [setCookieHeader];
+function readJsonAt(text, start) {
+    const first = text[start];
+    if (first !== '[' && first !== '{') return null;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = start; i < text.length; i++) {
+        const char = text[i];
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === '"') inString = false;
+            continue;
+        }
+        if (char === '"') {
+            inString = true;
+            continue;
+        }
+        if (char === '[' || char === '{') {
+            depth++;
+        } else if (char === ']' || char === '}') {
+            depth--;
+            if (depth === 0) {
+                try {
+                    return { value: JSON.parse(text.slice(start, i + 1)), end: i + 1 };
+                } catch {
+                    return null;
+                }
+            }
+        }
     }
-    for (const rawCookie of setCookies) {
-        const pair = rawCookie.split(';', 1)[0];
-        const separatorIndex = pair.indexOf('=');
-        if (separatorIndex <= 0) continue;
-        const name = pair.slice(0, separatorIndex).trim();
-        const value = pair.slice(separatorIndex + 1).trim();
-        if (!name) continue;
-        cookieStore.set(name, value);
-    }
+    return null;
 }
 
-function buildCookieHeader(cookieStore) {
-    return [...cookieStore.entries()].map(([name, value]) => `${name}=${value}`).join('; ');
+function parseCatalogPage(html) {
+    const flight = extractFlightPayload(html);
+
+    const itemsKey = '"items":{"items":';
+    const itemsIndex = flight.indexOf(itemsKey);
+    if (itemsIndex < 0) {
+        return { items: [], pagination: null };
+    }
+
+    const items = readJsonAt(flight, itemsIndex + itemsKey.length)?.value || [];
+
+    let pagination = null;
+    const paginationKey = '"pagination":';
+    const paginationIndex = flight.indexOf(paginationKey, itemsIndex);
+    if (paginationIndex >= 0) {
+        pagination = readJsonAt(flight, paginationIndex + paginationKey.length)?.value || null;
+    }
+
+    return { items, pagination };
 }
 
-function extractSize(item) {
-    const direct = String(item.size_title || '').trim();
-    if (direct) return direct;
+function extractBrand(itemBox) {
+    return String(itemBox?.firstLine || '').trim();
+}
 
-    const secondLine = String(item.item_box?.second_line || '').trim();
+function extractSize(itemBox) {
+    const secondLine = String(itemBox?.secondLine || '').trim();
     if (!secondLine) return 'Not specified';
 
     if (secondLine.includes('·')) {
@@ -111,157 +130,77 @@ function extractSize(item) {
         if (candidate) return candidate;
     }
 
-    if (secondLine !== String(item.status || '').trim()) return secondLine;
-    return 'Not specified';
+    return secondLine;
 }
 
-function extractCondition(item) {
-    const direct = String(item.status || '').trim();
-    if (direct) return direct;
-
-    const secondLine = String(item.item_box?.second_line || '').trim();
+function extractCondition(itemBox) {
+    const secondLine = String(itemBox?.secondLine || '').trim();
     if (!secondLine) return '';
 
     if (secondLine.includes('·')) {
-        const parts = secondLine.split('·').map((part) => part.trim()).filter(Boolean);
+        const parts = secondLine
+            .split('·')
+            .map((part) => part.trim())
+            .filter(Boolean);
         return parts.at(-1) || '';
     }
 
     return secondLine;
 }
 
-async function createApiSession({ proxyConfiguration, startUrl }) {
-    let lastError;
+function normalizeItem(productItem, { origin, page }) {
+    if (!productItem || productItem.id == null) return null;
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-            const proxySessionId = crypto.randomBytes(12).toString('hex');
-            const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl(proxySessionId) : undefined;
-            const cookieStore = new Map();
-
-            const response = await gotScraping({
-                url: startUrl,
-                proxyUrl,
-                throwHttpErrors: false,
-                timeout: { request: 60000 },
-                headers: {
-                    'user-agent': USER_AGENT,
-                    'accept-language': 'en-US,en;q=0.9',
-                    accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                },
-            });
-
-            updateCookieStore(cookieStore, response.headers['set-cookie']);
-
-            if (response.statusCode >= 400) {
-                throw new Error(`Session bootstrap failed with status ${response.statusCode}`);
-            }
-
-            const anonId = cookieStore.get('anon_id') || crypto.randomUUID();
-            const accessToken = cookieStore.get('access_token_web');
-
-            if (!accessToken) {
-                const responseHint = String(response.body || '').slice(0, 200).replace(/\s+/g, ' ');
-                throw new Error(`Missing access_token_web after bootstrap request. Status: ${response.statusCode}. Response hint: ${responseHint}`);
-            }
-
-            return {
-                proxyUrl,
-                cookieStore,
-                anonId,
-                accessToken,
-                csrfToken: crypto.randomUUID(),
-            };
-        } catch (err) {
-            lastError = err;
-            if (attempt < 3) {
-                const waitMs = jitterBackoff(attempt);
-                log.warning(`Session bootstrap attempt ${attempt}/3 failed: ${err.message}. Retrying in ${waitMs}ms.`);
-                await sleep(waitMs);
-            }
-        }
-    }
-
-    throw lastError || new Error('Session bootstrap failed after 3 attempts.');
-}
-
-async function requestCatalogPage({
-    session,
-    pageNo,
-    perPage,
-    startUrl,
-    apiParams,
-}) {
-    const query = new URLSearchParams(apiParams);
-    query.set('page', String(pageNo));
-    query.set('per_page', String(perPage));
-
-    try {
-        const response = await gotScraping({
-            url: `${API_BASE}?${query.toString()}`,
-            proxyUrl: session.proxyUrl,
-            throwHttpErrors: false,
-            timeout: { request: 60000 },
-            headers: {
-                'user-agent': USER_AGENT,
-                'accept-language': 'en-US,en;q=0.9',
-                accept: 'application/json, text/plain, */*',
-                referer: startUrl,
-                cookie: buildCookieHeader(session.cookieStore),
-                'x-anon-id': session.anonId,
-                'x-csrf-token': session.csrfToken,
-                authorization: `Bearer ${session.accessToken}`,
-            },
-        });
-
-        updateCookieStore(session.cookieStore, response.headers['set-cookie']);
-        return response;
-    } catch (err) {
-        log.warning(`Network error on page ${pageNo}: ${err.message}`);
-        return { statusCode: 0, body: err.message };
-    }
-}
-
-function normalizeItem(item) {
-    const id = item?.id != null ? String(item.id) : '';
-    if (!id) return null;
-
-    const path = item.path || '';
-    const fullUrl = item.url || (path ? `https://www.vinted.com${path}` : '');
-    const priceCurrency = item.price?.currency_code || item.total_item_price?.currency_code || 'USD';
-    const userPhotoUrl = item.user?.photo?.url || item.user?.photo?.full_size_url || '';
+    const itemBox = productItem.itemBox || {};
+    const photos = Array.isArray(productItem.photos) ? productItem.photos : [];
+    const price = productItem.price || {};
+    const totalPrice = productItem.totalItemPrice || {};
+    const serviceFee = productItem.serviceFee || {};
+    const user = productItem.user || {};
 
     return {
-        product_id: id,
-        title: item.title || item.brand_title || 'Unknown',
-        brand: item.brand_title || '',
-        size: extractSize(item),
-        condition: extractCondition(item),
-        price: item.price?.amount || '',
-        total_price: item.total_item_price?.amount || '',
-        currency: priceCurrency,
-        service_fee: item.service_fee?.amount || '',
-        image_url: item.photo?.url || item.photos?.[0]?.url || '',
-        image_full_url: item.photo?.full_size_url || item.photo?.url || item.photos?.[0]?.full_size_url || '',
-        image_dominant_color: item.photo?.dominant_color || '',
-        image_dominant_color_opaque: item.photo?.dominant_color_opaque || '',
-        image_count: item.photos?.length || 0,
-        url: fullUrl,
-        favorite_count: Number(item.favourite_count || 0),
-        view_count: Number(item.view_count || 0),
-        is_favourite: Boolean(item.is_favourite),
-        is_visible: Boolean(item.is_visible),
-        is_promoted: Boolean(item.promoted),
-        content_source: item.content_source || '',
-        seller_id: item.user?.id != null ? String(item.user.id) : '',
-        seller_username: item.user?.login || '',
-        seller_profile_url: item.user?.profile_url || '',
-        seller_avatar_url: userPhotoUrl,
-        seller_is_business: Boolean(item.user?.business),
-        show_1st_time_discount: Boolean(item.show_1st_time_seller_discount),
-        search_score: item.search_tracking_params?.score ?? null,
-        matched_queries: item.search_tracking_params?.matched_queries || [],
+        product_id: String(productItem.id),
+        title: productItem.title || 'Unknown',
+        brand: extractBrand(itemBox),
+        size: extractSize(itemBox),
+        condition: extractCondition(itemBox),
+        price: price.amount || '',
+        total_price: totalPrice.amount || '',
+        currency: price.currencyCode || 'USD',
+        service_fee: serviceFee.amount || '',
+        image_url: productItem.thumbnailUrl || photos[0]?.url || '',
+        image_full_url: photos[0]?.url || productItem.thumbnailUrl || '',
+        image_dominant_color: productItem.dominantColor || '',
+        image_dominant_color_opaque: '',
+        image_count: photos.length,
+        url: productItem.url ? `${origin}${productItem.url}` : '',
+        favorite_count: Number(productItem.favouriteCount || 0),
+        view_count: 0,
+        is_favourite: Boolean(productItem.isFavourite),
+        is_visible: true,
+        is_promoted: Boolean(productItem.isPromoted),
+        content_source: '',
+        seller_id: user.id != null ? String(user.id) : '',
+        seller_username: user.login || '',
+        seller_profile_url: user.profileUrl || (user.id != null ? `${origin}/member/${user.id}` : ''),
+        seller_avatar_url: user.photo?.url || user.thumbnailUrl || '',
+        seller_is_business: Boolean(user.isBusiness),
+        show_1st_time_discount: Boolean(productItem.priceWithDiscount),
+        search_score: null,
+        matched_queries: [],
+        page,
     };
+}
+
+async function fetchCatalogPage({ client, pageUrl }) {
+    try {
+        const response = await client.fetch(pageUrl, { timeout: 60000 });
+        const html = await response.text();
+        return { statusCode: response.status, html };
+    } catch (error) {
+        log.warning(`Network error on ${pageUrl}: ${error.message}`);
+        return { statusCode: 0, html: '' };
+    }
 }
 
 await Actor.main(async () => {
@@ -279,7 +218,6 @@ await Actor.main(async () => {
 
     const resultsWanted = toPositiveInt(resultsWantedRaw, 20);
     const maxPages = toPositiveInt(maxPagesRaw, 50);
-    const perPage = 96;
 
     let minPrice = minPriceRaw;
     let maxPrice = maxPriceRaw;
@@ -300,60 +238,41 @@ await Actor.main(async () => {
         minPrice,
         maxPrice,
     });
-    const apiParams = normalizeApiParams(initialUrl, {
-        keyword: String(keyword || '').trim(),
-        minPrice,
-        maxPrice,
+    const { origin } = new URL(initialUrl);
+
+    const proxyConfiguration = await Actor.createProxyConfiguration(proxyConfig || { useApifyProxy: false });
+    const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
+
+    // One impit instance: reuses the impersonated Chrome profile and connection pool.
+    // Chrome is verified to negotiate TLS successfully with Vinted (unlike chrome100-chrome116).
+    const client = new Impit({
+        browser: 'chrome',
+        ...(proxyUrl && { proxyUrl }),
     });
 
-    const defaultProxyGroups = ['RESIDENTIAL'];
-    const proxyConfiguration = await Actor.createProxyConfiguration(proxyConfig || {
-        useApifyProxy: true,
-        apifyProxyGroups: defaultProxyGroups,
-    });
+    log.info(`Starting Vinted catalog scraper: ${initialUrl}`);
+    log.info(`Target: ${resultsWanted} results, max ${maxPages} pages`);
 
-    log.info(`Starting Vinted API scraper: ${initialUrl}`);
-    log.info(`Target: ${resultsWanted} results, max ${maxPages} pages, per page ${perPage}`);
-
-    let session = await createApiSession({ proxyConfiguration, startUrl: initialUrl });
     let saved = 0;
     const seenIds = new Set();
 
     for (let pageNo = 1; pageNo <= maxPages && saved < resultsWanted; pageNo++) {
+        const pageUrl = new URL(initialUrl);
+        pageUrl.searchParams.set('page', String(pageNo));
+
         let pageData = null;
 
         for (let attempt = 1; attempt <= 4; attempt++) {
-            const response = await requestCatalogPage({
-                session,
-                pageNo,
-                perPage,
-                startUrl: initialUrl,
-                apiParams,
-            });
+            const { statusCode, html } = await fetchCatalogPage({ client, pageUrl: pageUrl.href });
 
-            if (response.statusCode === 200) {
-                try {
-                    pageData = JSON.parse(response.body);
-                    break;
-                } catch (error) {
-                    log.warning(`Malformed JSON on page ${pageNo}, attempt ${attempt}/4: ${error.message}`);
-                    await sleep(jitterBackoff(attempt));
-                }
-                continue;
+            if (statusCode === 200) {
+                pageData = parseCatalogPage(html);
+                break;
             }
 
-            if (response.statusCode === 401 || response.statusCode === 403) {
-                log.warning(`Auth/session rejected on page ${pageNo} (status ${response.statusCode}). Refreshing session.`);
-                session = await createApiSession({ proxyConfiguration, startUrl: initialUrl });
-            } else if (response.statusCode === 429 || response.statusCode >= 500) {
-                const waitMs = jitterBackoff(attempt);
-                log.warning(`Transient error ${response.statusCode} on page ${pageNo}, retry ${attempt}/4 in ${waitMs}ms.`);
-                await sleep(waitMs);
-            } else {
-                const waitMs = jitterBackoff(attempt);
-                log.warning(`Unexpected status ${response.statusCode} on page ${pageNo}, retry ${attempt}/4 in ${waitMs}ms.`);
-                await sleep(waitMs);
-            }
+            const waitMs = jitterBackoff(attempt);
+            log.warning(`Unexpected status ${statusCode} on page ${pageNo}, retry ${attempt}/4 in ${waitMs}ms.`);
+            await sleep(waitMs);
         }
 
         if (!pageData) {
@@ -361,12 +280,12 @@ await Actor.main(async () => {
             continue;
         }
 
-        const items = Array.isArray(pageData.items) ? pageData.items : [];
+        const { items } = pageData;
         const totalPages = Number(pageData.pagination?.total_pages || 0);
         if (pageNo === 1) {
-            log.info(`Pagination: API reports ${totalPages || 'unknown'} total pages.`);
+            log.info(`Pagination: ${totalPages || 'unknown'} total pages.`);
         }
-        log.info(`API page ${pageNo}: received ${items.length} raw items`);
+        log.info(`Page ${pageNo}: received ${items.length} raw items`);
 
         if (items.length === 0) {
             log.info(`No items on page ${pageNo}, stopping.`);
@@ -374,12 +293,10 @@ await Actor.main(async () => {
         }
 
         const outputItems = [];
-        for (const item of items) {
-            const normalized = normalizeItem(item);
+        for (const entry of items) {
+            const normalized = normalizeItem(entry?.productItem, { origin, page: pageNo });
             if (!normalized) continue;
             if (seenIds.has(normalized.product_id)) continue;
-
-            normalized.page = pageNo;
 
             seenIds.add(normalized.product_id);
             outputItems.push(normalized);
@@ -395,7 +312,7 @@ await Actor.main(async () => {
         log.info(`Saved ${outputItems.length} items from page ${pageNo}. Total: ${saved}/${resultsWanted}`);
 
         if (totalPages > 0 && pageNo >= totalPages) {
-            log.info(`Reached final API page (${totalPages}).`);
+            log.info(`Reached final page (${totalPages}).`);
             break;
         }
     }
